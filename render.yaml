@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: tongpin-trial
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile.render
+    dockerContext: .
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_PROVIDER
+        value: turso
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      - key: IMAGE_STORAGE
+        value: database
+      - key: AUTH_CODE_SECRET
+        generateValue: true
+      - key: AUTH_ALLOW_DEMO_CODES
+        value: "false"
+      - key: AUTH_COOKIE_SECURE
+        value: "true"
+      - key: DEMO_SEED_ENABLED
+        value: "false"
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false

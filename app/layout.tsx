@@ -1,0 +1,17 @@
+import type { Metadata } from "next";
+import { Toaster } from "@/components/ui/sonner";
+import "./globals.css";
+
+export const metadata: Metadata = {
+  title: "同频实验室｜全国高校学生性格测试与社交社区",
+  description: "从 32 个真实校园情境了解 MBTI 与关系性格；认证高校身份后，进入全国高校匹配、私信和社交广场。",
+  icons: { icon: "/favicon.svg" },
+};
+
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  return (
+    <html lang="zh-CN">
+      <body>{children}<Toaster richColors position="top-center" /></body>
+    </html>
+  );
+}
