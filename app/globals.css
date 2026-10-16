@@ -2,6 +2,7 @@
 @import "tw-animate-css";
 @import "../vendor/shadcn-tailwind-4.13.0.css";
 @import "./premium.css";
+@import "./refined.css";
 
 @utility scrollbar-thin {
   scrollbar-width: thin;
@@ -26,10 +27,10 @@
   --card-foreground: #1d1d1f;
   --popover: #ffffff;
   --popover-foreground: #1d1d1f;
-  --primary: #286451;
+  --primary: #0071e3;
   --primary-foreground: #ffffff;
-  --secondary: #eaf0ec;
-  --secondary-foreground: #205340;
+  --secondary: #eef3fc;
+  --secondary-foreground: #0066cc;
   --muted: #ededf0;
   --muted-foreground: #6e6e73;
   --accent: #edf0ed;
@@ -37,8 +38,8 @@
   --destructive: #e7000b;
   --border: #e5e5e7;
   --input: #d6d6da;
-  --ring: #286451;
-  --chart-1: #286451;
+  --ring: #0071e3;
+  --chart-1: #0071e3;
   --chart-2: #a66d52;
   --chart-3: #526f80;
   --chart-4: #b89b63;
@@ -104,4 +105,4 @@ body {
 }
 
 button, a, input, textarea, select { outline-offset: 3px; }
-::selection { background: #dcebe1; color: #205340; }
+::selection { background: #dcebe1; color: #0066cc; }

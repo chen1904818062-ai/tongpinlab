@@ -5,6 +5,7 @@ import { requireAppUser } from "@/lib/session";
 export async function POST(request: Request) {
   try {
     const user = await requireAppUser("/admin");
+    if (user.role !== "admin") return fail(new Error("仅管理员可以操作。"), 403);
     const body = await request.json() as Record<string, unknown>;
     if (body.action === "resolve_report") {
       return ok(await resolveReport(user.id, Number(body.reportId), body.status === "dismissed" ? "dismissed" : "resolved", String(body.note ?? "")));

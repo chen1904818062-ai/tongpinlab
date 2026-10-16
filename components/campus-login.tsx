@@ -61,9 +61,9 @@ export function CampusLogin({ returnTo }: { returnTo: string }) {
         <form className="mt-7 space-y-5" onSubmit={(event) => { event.preventDefault(); if (!busy && email.includes("@") && (!sent || code.length === 6)) void (sent ? verifyCode() : sendCode()); }}>
           <div><label htmlFor="login-email" className="mb-2 block">邮箱地址</label><Input id="login-email" type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" /></div>
           {sent && <div><label htmlFor="login-code" className="mb-2 block">6 位验证码</label><Input id="login-code" inputMode="numeric" autoComplete="one-time-code" required pattern="[0-9]{6}" maxLength={6} value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="输入验证码" className="tracking-[.35em]" /><p className="mt-2 text-xs text-[#86868b]" role="status">验证码已发送，请查看邮箱。</p></div>}
-          {demoCode && <div className="rounded-xl border border-[#e0e8e1] bg-[#f1f6f2] p-3 text-sm text-[#286451]">本地演示验证码：<strong>{demoCode}</strong></div>}
-          <Button type="submit" size="lg" disabled={busy || !email.includes("@") || (sent && code.length !== 6)} className="w-full bg-[#286451] font-medium hover:bg-[#205340]">{busy ? <Loader2 className="size-4 animate-spin" /> : sent ? <ArrowRight className="size-4" /> : <Mail className="size-4" />}{busy ? "请稍候…" : sent ? "登录并继续" : "获取验证码"}</Button>
-          {sent && <button type="button" disabled={busy} onClick={sendCode} className="w-full text-xs text-[#286451] hover:underline">重新获取验证码</button>}
+          {demoCode && <div className="rounded-xl border border-[#e0e8e1] bg-[#f1f6f2] p-3 text-sm text-[#0071e3]">本地演示验证码：<strong>{demoCode}</strong></div>}
+          <Button type="submit" size="lg" disabled={busy || !email.includes("@") || (sent && code.length !== 6)} className="w-full bg-[#0071e3] font-medium hover:bg-[#0066cc]">{busy ? <Loader2 className="size-4 animate-spin" /> : sent ? <ArrowRight className="size-4" /> : <Mail className="size-4" />}{busy ? "请稍候…" : sent ? "登录并继续" : "获取验证码"}</Button>
+          {sent && <button type="button" disabled={busy} onClick={sendCode} className="w-full text-xs text-[#0071e3] hover:underline">重新获取验证码</button>}
         </form>
         <div className="login-privacy"><LockKeyhole size={13} /><span>邮箱仅用于登录与身份验证。你的邮箱和认证材料不会向其他用户公开。</span></div>
       </section>

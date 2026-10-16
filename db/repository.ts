@@ -1,6 +1,7 @@
 import type { AuthIdentity } from "@/lib/auth";
 import { getD1 } from "@/db";
 import { deliverCampusCode } from "@/lib/campus-email";
+import { isAdminEmail } from "@/lib/admin";
 import { allQuestions, demoCandidate, questionSections } from "@/lib/product-data";
 
 type RecordValue = Record<string, unknown>;
@@ -32,8 +33,7 @@ export async function ensureUser(identity: AuthIdentity) {
   if (!user) {
     const userId = crypto.randomUUID();
     const createdAt = now();
-    const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
-    const role = adminEmail === identity.email.toLowerCase() ? "admin" : "student";
+    const role = isAdminEmail(identity.email) ? "admin" : "student";
     await db.batch([
       db.prepare(`
         INSERT INTO users (id, platform_user_id, email, display_name, role, created_at, updated_at)
@@ -44,9 +44,10 @@ export async function ensureUser(identity: AuthIdentity) {
     user = await db.prepare("SELECT * FROM users WHERE id = ?").bind(userId).first<RecordValue>();
   } else {
     await db
-      .prepare("UPDATE users SET email = ?, display_name = CASE WHEN TRIM(display_name) = '' THEN ? ELSE display_name END, updated_at = ? WHERE id = ?")
-      .bind(identity.email, identity.displayName, now(), user.id)
+      .prepare("UPDATE users SET email = ?, role = ?, display_name = CASE WHEN TRIM(display_name) = '' THEN ? ELSE display_name END, updated_at = ? WHERE id = ?")
+      .bind(identity.email, isAdminEmail(identity.email) ? "admin" : "student", identity.displayName, now(), user.id)
       .run();
+    user = { ...user, email: identity.email, role: isAdminEmail(identity.email) ? "admin" : "student" };
   }
 
   if (!user) throw new Error("Unable to create user record.");
@@ -130,7 +131,7 @@ function normalizeUser(user: RecordValue) {
     university: user.university ? String(user.university) : null,
     verificationMethod: user.verification_method ? String(user.verification_method) : null,
     verificationStatus: String(user.verification_status ?? (asBool(user.campus_verified) ? "approved" : "unverified")),
-    role: String(user.role ?? "student"),
+    role: user.status === "active" && isAdminEmail(String(user.email ?? "")) ? "admin" : user.role === "demo" ? "demo" : "student",
     onboardingStep: Number(user.onboarding_step ?? 0),
     questionnaireCompleted: asBool(user.questionnaire_completed),
     matchingEnabled: asBool(user.matching_enabled),
@@ -360,6 +361,8 @@ export async function saveProfile(userId: string, input: RecordValue) {
   const db = getD1();
   const nickname = String(input.nickname ?? "").trim().slice(0, 20);
   if (nickname.length < 2) throw new Error("昵称至少需要 2 个字。 ");
+  const gender = String(input.gender ?? "");
+  if (gender !== "男生" && gender !== "女生") throw new Error("请选择男生或女生。");
   const interests = Array.isArray(input.interests)
     ? input.interests.map(String).filter(Boolean).slice(0, 8)
     : String(input.interests ?? "").split(/[，,]/).map((item) => item.trim()).filter(Boolean).slice(0, 8);
@@ -368,7 +371,7 @@ export async function saveProfile(userId: string, input: RecordValue) {
       UPDATE profiles SET gender = ?, grade = ?, major = ?, campus = ?, hometown = ?, height = ?, smoking = ?,
         looking_for = ?, bio = ?, interests_json = ?, review_status = 'pending', updated_at = ? WHERE user_id = ?
     `).bind(
-      String(input.gender ?? ""), String(input.grade ?? ""), String(input.major ?? ""), String(input.campus ?? ""),
+      gender, String(input.grade ?? ""), String(input.major ?? ""), String(input.campus ?? ""),
       String(input.hometown ?? ""), input.height ? Number(input.height) : null, String(input.smoking ?? ""),
       String(input.lookingFor ?? "relationship"), String(input.bio ?? "").slice(0, 300), JSON.stringify(interests), now(), userId,
     ),
@@ -754,7 +757,8 @@ export async function getAdminSnapshot(userId: string) {
       ORDER BY r.created_at DESC LIMIT 100`).all<RecordValue>(),
     db.prepare("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 30").all<RecordValue>(),
   ]);
-  return { counts: counts ?? {}, users: users.results, verifications: verificationRows.results, reports: reportRows.results, logs: logs.results };
+  // Native SQLite rows have a null prototype; client props must be plain objects.
+  return { counts: { ...counts }, users: users.results.map((row) => ({ ...row })), verifications: verificationRows.results.map((row) => ({ ...row })), reports: reportRows.results.map((row) => ({ ...row })), logs: logs.results.map((row) => ({ ...row })) };
 }
 
 export async function reviewVerification(actorId: string, requestId: number, status: "approved" | "rejected") {

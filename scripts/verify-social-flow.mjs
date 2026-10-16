@@ -109,6 +109,7 @@ const serverOptions = {
     TURSO_AUTH_TOKEN: useTurso ? "fixture-token" : "",
     IMAGE_STORAGE: "database",
     AUTH_ALLOW_DEMO_CODES: "true",
+    ADMIN_EMAIL: "a@example.edu.cn",
     RESEND_API_KEY: "",
     EMAIL_FROM: "",
   },
@@ -135,6 +136,18 @@ try {
   assert((await request("/match", tokens.b)).response.ok, "账号 B 可以进入匹配页");
 
   const db = new DatabaseSync(databasePath);
+  const ownerPage = await request("/admin", tokens.a);
+  assert(ownerPage.response.ok && ownerPage.payload.includes("平台运行情况"), "现有所有者账号可以访问管理后台");
+  assert(db.prepare("SELECT role FROM users WHERE id = 'user-a'").get().role === "admin", "已有所有者账号会同步为管理员");
+  db.prepare("UPDATE users SET role = 'admin' WHERE id = 'user-b'").run();
+  const blockedAdminPage = await request("/admin", tokens.b);
+  assert(!blockedAdminPage.payload.includes("平台运行情况"), "其他账号即使残留 admin 角色也无法读取后台");
+  const blockedAdminAction = await action("/api/admin", tokens.b, { action: "review_profile", userId: "user-a", reviewStatus: "approved" });
+  assert(blockedAdminAction.response.status === 403, "普通账号直接调用后台接口返回 403");
+  assert(!(await request("/match", tokens.b)).payload.includes("管理后台"), "普通账号看不到管理后台入口");
+  assert((await request("/onboarding", tokens.a)).payload.includes("管理后台"), "所有者在认证页面也能进入后台");
+  const rejectedGender = await action("/api/onboarding", tokens.a, { action: "save_profile", profile: { nickname: "测试甲", gender: "其他" } });
+  assert(!rejectedGender.response.ok && rejectedGender.payload.error.includes("男生或女生") && db.prepare("SELECT gender FROM profiles WHERE user_id = 'user-a'").get().gender === "女", "后端拒绝其他性别值且不会修改原资料");
   const image = new Uint8Array(await sharp({ create: { width: 32, height: 32, channels: 3, background: "#4b37e8" } }).png().toBuffer());
   async function uploadAvatar() {
     const form = new FormData();
