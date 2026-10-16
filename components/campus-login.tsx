@@ -1,8 +1,10 @@
 "use client";
 
+import { BrandMark } from "@/components/brand-mark";
+
 import { useState } from "react";
 import { PremiumHeader } from "@/components/premium-header";
-import { ArrowRight, BadgeCheck, Compass, HeartHandshake, Loader2, LockKeyhole, Mail } from "lucide-react";
+import { ArrowRight, BadgeCheck, HeartHandshake, Loader2, LockKeyhole, Mail } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -45,8 +47,8 @@ export function CampusLogin({ returnTo }: { returnTo: string }) {
     <PremiumHeader />
     <div className="premium-login-layout">
       <section className="premium-login-story">
-        <p className="premium-eyebrow">下一段故事，从同频开始</p>
-        <h1>带着真实的你，<br /><span>遇见聊得来的人。</span></h1>
+        <p className="premium-eyebrow">先从一句你好开始</p>
+        <h1>在这里，<br /><span>慢慢认识彼此。</span></h1>
         <p>一个属于高校学生的相遇空间。先从一个共同点开始，再慢慢了解彼此。</p>
         <div className="login-benefits">
           <Feature icon={<BadgeCheck />} title="真实的校园身份" text="全国高校认证，让交流更安心" />
@@ -55,15 +57,15 @@ export function CampusLogin({ returnTo }: { returnTo: string }) {
         </div>
       </section>
       <section className="premium-login-card" aria-labelledby="login-title">
-        <span className="login-card-icon"><Compass size={22} strokeWidth={1.4} /></span>
-        <h2 id="login-title">欢迎来到同频。</h2>
+        <span className="login-card-icon"><BrandMark /></span>
+        <h2 id="login-title">先打个招呼。</h2>
         <p>使用常用邮箱登录，首次验证即创建账号。<br />高校身份将在下一步单独认证。</p>
         <form className="mt-7 space-y-5" onSubmit={(event) => { event.preventDefault(); if (!busy && email.includes("@") && (!sent || code.length === 6)) void (sent ? verifyCode() : sendCode()); }}>
           <div><label htmlFor="login-email" className="mb-2 block">邮箱地址</label><Input id="login-email" type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" /></div>
           {sent && <div><label htmlFor="login-code" className="mb-2 block">6 位验证码</label><Input id="login-code" inputMode="numeric" autoComplete="one-time-code" required pattern="[0-9]{6}" maxLength={6} value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="输入验证码" className="tracking-[.35em]" /><p className="mt-2 text-xs text-[#86868b]" role="status">验证码已发送，请查看邮箱。</p></div>}
-          {demoCode && <div className="rounded-xl border border-[#e0e8e1] bg-[#f1f6f2] p-3 text-sm text-[#0071e3]">本地演示验证码：<strong>{demoCode}</strong></div>}
-          <Button type="submit" size="lg" disabled={busy || !email.includes("@") || (sent && code.length !== 6)} className="w-full bg-[#0071e3] font-medium hover:bg-[#0066cc]">{busy ? <Loader2 className="size-4 animate-spin" /> : sent ? <ArrowRight className="size-4" /> : <Mail className="size-4" />}{busy ? "请稍候…" : sent ? "登录并继续" : "获取验证码"}</Button>
-          {sent && <button type="button" disabled={busy} onClick={sendCode} className="w-full text-xs text-[#0071e3] hover:underline">重新获取验证码</button>}
+          {demoCode && <div className="rounded-xl border border-[#e0e8e1] bg-[#f1f6f2] p-3 text-sm text-[#286451]">本地演示验证码：<strong>{demoCode}</strong></div>}
+          <Button type="submit" size="lg" disabled={busy || !email.includes("@") || (sent && code.length !== 6)} className="w-full bg-[#286451] font-medium hover:bg-[#205340]">{busy ? <Loader2 className="size-4 animate-spin" /> : sent ? <ArrowRight className="size-4" /> : <Mail className="size-4" />}{busy ? "请稍候…" : sent ? "登录并继续" : "获取验证码"}</Button>
+          {sent && <button type="button" disabled={busy} onClick={sendCode} className="w-full text-xs text-[#286451] hover:underline">重新获取验证码</button>}
         </form>
         <div className="login-privacy"><LockKeyhole size={13} /><span>邮箱仅用于登录与身份验证。你的邮箱和认证材料不会向其他用户公开。</span></div>
       </section>
