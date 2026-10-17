@@ -5,7 +5,7 @@ import { DatabaseSync, backup } from "node:sqlite";
 import path from "node:path";
 
 const root = process.cwd(), base = "http://127.0.0.1:3918";
-const qa = path.join(root, ".tmp", "community-onboarding-qa");
+const qa = path.join(root, ".tmp", "unified-community-qa");
 mkdirSync(qa, { recursive: true });
 for (const [source, dest] of [[".next/static", ".next/standalone/.next/static"], ["public", ".next/standalone/public"], ["drizzle", ".next/standalone/drizzle"]]) cpSync(path.join(root, source), path.join(root, dest), { recursive: true });
 const database = path.join(qa, "preview.sqlite");
@@ -32,7 +32,7 @@ try {
   const evaluate = async expression => { const result = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }); if (result.exceptionDetails) throw Error(JSON.stringify(result.exceptionDetails)); return result.result.value; };
   const until = async expression => { for (let i = 0; i < 100; i++) { if (await evaluate(expression)) return; await pause(120); } throw Error("Timeout: " + expression); };
   const nav = async url => { await send("Page.navigate", { url: base + url }); await pause(120); await until("document.readyState==='complete' && location.pathname===" + JSON.stringify(new URL(url, base).pathname)); await pause(450); };
-  const click = async expression => { await evaluate(expression + ".click()"); await pause(300); };
+  const click = async expression => { await evaluate(`(${expression}).scrollIntoView({block:'center',behavior:'instant'})`); await pause(100); const point = await evaluate(`(()=>{const rect=(${expression}).getBoundingClientRect();return {x:rect.x+rect.width/2,y:rect.y+rect.height/2};})()`); await send("Input.dispatchMouseEvent", {type:"mousePressed",button:"left",clickCount:1,...point}); await send("Input.dispatchMouseEvent", {type:"mouseReleased",button:"left",clickCount:1,...point}); await pause(300); };
   const input = async (selector, value, kind = "HTMLInputElement") => { await evaluate(`(()=>{const element=document.querySelector(${JSON.stringify(selector)}); Object.getOwnPropertyDescriptor(${kind}.prototype,'value').set.call(element,${JSON.stringify(value)}); element.dispatchEvent(new Event('input',{bubbles:true}));})()`); await pause(180); };
   capture = async name => { const image = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false }); writeFileSync(path.join(qa, name + ".png"), Buffer.from(image.data, "base64")); };
   await send("Page.enable"); await send("Runtime.enable"); await send("Network.enable");
@@ -53,9 +53,27 @@ try {
   assert(await evaluate("JSON.parse(localStorage.getItem('campus-personality-v2')).answers.every(value=>value===-2)"), "Actual 32-question flow completes and saves answers");
   await click("Array.from(document.querySelectorAll('a')).find(item=>item.innerText.includes('先去社区逛逛'))");
   await until("location.pathname==='/community' && document.querySelectorAll('.companion-card').length===2");
+  assert(await evaluate("document.querySelectorAll('[role=tab]').length===4 && document.querySelector('[role=tab][data-state=active]').innerText.includes('同频广场')"), "Completed test opens unified four-tab home with plaza selected");
+  assert(await evaluate("!Array.from(document.querySelectorAll('header a')).some(item=>item.innerText.includes('逛广场'))"), "Header no longer contains duplicate plaza entrance");
   assert(await evaluate("!document.cookie.includes('tongpin_session') && document.querySelectorAll('.plaza-post.is-official').length===6"), "Completed visitor enters community without login and sees six official topics");
   assert(await evaluate("!document.body.innerText.includes('游客不能看到的') && document.body.innerText.includes('主动公开给完成测评游客的动态')"), "Browser feed exposes explicitly public content only");
   await capture("community-desktop");
+  await click("Array.from(document.querySelectorAll('[role=tab]')).find(item=>item.innerText.includes('今日同频'))");
+  await until("Boolean(document.querySelector('.experience-matching'))");
+  assert(await evaluate("document.querySelectorAll('.experience-match-card').length===2 && document.querySelector('.experience-matching').innerText.includes('角色设定') && !document.querySelector('.experience-matching').innerText.includes('/ 100')"), "Guest can preview labeled virtual matching cards without fabricated compatibility scores");
+  await capture("guest-matching-desktop");
+  await click("document.querySelector('.experience-match-card button')"); await until("Boolean(document.querySelector('.community-join-dialog'))");
+  const experienceJoin = await evaluate("document.querySelector('.community-join-dialog a').getAttribute('href')");
+  const experienceReturn = new URL(new URL(experienceJoin,base).searchParams.get('return_to'),base).searchParams.get('return_to');
+  assert(experienceReturn === '/community?tab=chat&companion=official-xiaotong', "Virtual matching requires preparation and retains selected partner");
+  assert(db.prepare("SELECT COUNT(*) AS count FROM companion_experiences").get().count === 2, "Guest preview never creates or changes virtual sessions");
+  await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" }); await pause(200);
+  await until("!document.querySelector('[role=dialog]') && getComputedStyle(document.body).pointerEvents!=='none'");
+  await click("Array.from(document.querySelectorAll('[role=tab]')).find(item=>item.innerText.includes('同频广场'))");
+  await until("Boolean(document.querySelector('.plaza-post'))");
+  await evaluate("history.back()"); await until("Boolean(document.querySelector('.experience-matching'))");
+  await evaluate("history.forward()"); await until("Boolean(document.querySelector('.plaza-post'))");
+  assert(true, "Browser back and forward restore selected community tab");
   await click("document.querySelector('.companion-card button')"); await until("Boolean(document.querySelector('.companion-dialog'))");
   assert(await evaluate("document.querySelector('.companion-dialog').innerText.includes('预设产品说明')"), "Companion product guide identifies preset answers");
   await click("Array.from(document.querySelectorAll('.companion-question-list button')).find(item=>item.innerText.includes('没有高校邮箱'))");
@@ -99,7 +117,7 @@ try {
   for (const [width, height] of [[390,844],[320,740]]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: true }); await nav("/community");
     assert(await evaluate("document.documentElement.scrollWidth<=innerWidth"), `${width}px community has no horizontal overflow`); await capture(`community-mobile-${width}`);
-    await click("document.querySelector('.community-actions button')"); await until("Boolean(document.querySelector('.community-join-dialog'))");
+    await click("Array.from(document.querySelectorAll('button')).find(item=>item.innerText==='继续准备')"); await until("Boolean(document.querySelector('.community-join-dialog'))");
     assert(await evaluate("document.querySelector('.community-join-dialog').getBoundingClientRect().width<=innerWidth"), `${width}px preparation modal fits screen`); await capture(`join-mobile-${width}`);
     await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" }); await pause(200);
   }
@@ -142,6 +160,38 @@ try {
   await pause(1000);
   assert(await evaluate("document.querySelector('#plaza-post--1003').getBoundingClientRect().top>=0 && document.querySelector('#plaza-post--1003').getBoundingClientRect().top<innerHeight"), "Restored topic scrolls into the visible viewport");
   await capture("new-account-preparation-complete");
+  await click("Array.from(document.querySelectorAll('[role=tab]')).find(item=>item.innerText.includes('今日同频'))");
+  await until("Boolean(document.querySelector('.experience-match-card'))");
+  await click("document.querySelector('.experience-match-card button')");
+  await until("Boolean(document.querySelector('.experience-welcome'))");
+  assert(await evaluate("location.search.includes('companion=official-xiaotong') && document.querySelector('.experience-conversation').innerText.includes('官方虚拟伙伴')"), "Prepared new student enters selected official partner conversation");
+  await click("document.querySelector('.experience-welcome button')"); await until("document.querySelectorAll('.experience-options button').length===2");
+  await click("document.querySelector('.experience-options button')"); await until("document.querySelectorAll('.experience-message.is-user').length===1");
+  await capture("virtual-conversation-desktop");
+  await nav("/community?tab=chat&companion=official-xiaotong");
+  await until("document.querySelectorAll('.experience-message.is-user').length===1");
+  assert(await evaluate("document.querySelector('.experience-messages').innerText.includes('共同经历')"), "Virtual practice restores after full browser reload with corresponding reply");
+  for(let index=1;index<3;index++){
+    await click("document.querySelector('.experience-options button')");
+    await until(`document.querySelectorAll('.experience-message.is-user').length===${index+1}`);
+  }
+  await until("Boolean(document.querySelector('.experience-complete'))");
+  assert(await evaluate("!document.querySelector('.experience-options') && document.querySelector('.experience-complete').innerText.includes('练习完成')"), "Campus scenario ends explicitly and offers real community continuation");
+  await capture("virtual-conversation-complete");
+  await click("document.querySelector('.experience-exit')"); await until("Boolean(document.querySelector('.experience-matching'))");
+  await click("document.querySelectorAll('.experience-match-card button')[1]"); await until("Boolean(document.querySelector('.experience-welcome'))");
+  await click("document.querySelector('.experience-welcome button')"); await until("document.querySelectorAll('.experience-options button').length===2");
+  assert(await evaluate("document.querySelector('.experience-chat-heading').innerText.includes('绕操场走一圈')"), "Second official partner has its own distinct campus scenario");
+  for(const [width,height] of [[390,844],[320,740]]){
+    await send("Emulation.setDeviceMetricsOverride", {width,height,deviceScaleFactor:1,mobile:true});
+    await nav("/community?tab=chat&companion=official-xiaopin"); await until("Boolean(document.querySelector('.experience-options'))");
+    assert(await evaluate("document.documentElement.scrollWidth<=innerWidth && document.querySelector('.experience-conversation').scrollWidth<=document.querySelector('.experience-conversation').clientWidth"),`${width}px virtual conversation fits viewport`);
+    await evaluate("document.querySelector('.experience-conversation').scrollIntoView()");await pause(500);await capture(`virtual-conversation-mobile-${width}`);
+    await nav("/community?tab=match");await until("Boolean(document.querySelector('.experience-matching'))");
+    assert(await evaluate("document.documentElement.scrollWidth<=innerWidth"),`${width}px matching cards fit viewport`);
+    await evaluate("document.querySelector('.experience-matching').scrollIntoView()");await pause(500);await capture(`matching-mobile-${width}`);
+  }
+  assert(db.prepare("SELECT COUNT(*) AS count FROM companion_experiences WHERE user_id=?").get(newUser.id).count===2,"Each partner's conversation is saved under the current student account");
   assert(errors.length === 0, "No uncaught browser exceptions during community and preparation flow");
   writeFileSync(path.join(qa,"checks.json"),JSON.stringify({ checks, errors },null,2));
   console.log("Screenshots: " + qa);

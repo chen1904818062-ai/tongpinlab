@@ -5,6 +5,7 @@ import { BrandMark } from "@/components/brand-mark";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { ArrowRight, BadgeCheck, BookOpen, BrainCircuit, Check, ChevronRight, Heart, Info, LockKeyhole, LogOut, MessageCircle, MoreHorizontal, Send, Settings2, ShieldCheck, Sparkles, UsersRound, UserRound } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +17,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { CompanionGuide } from "@/components/companion-guide";
 import { SocialPlaza } from "@/components/social-plaza";
+import { ParticipationDialog } from "@/components/participation-dialog";
+import { CompanionMatching } from "@/components/companion-matching";
+import { CompanionConversation } from "@/components/companion-conversation";
+import { companionProfiles, getCompanion } from "@/lib/companion-experience";
+import type { CommunityViewer } from "@/lib/community-viewer";
+import type { PlazaSnapshot } from "@/lib/plaza-types";
 
 type ProductData = {
   user: { id: string; displayName: string; campusVerified: boolean; questionnaireCompleted: boolean; matchingEnabled: boolean; role: string; university?: string | null; verificationMethod?: string | null; verificationStatus?: string } | null;
@@ -39,13 +46,31 @@ async function get<T>(url: string) {
   return result.data as T;
 }
 
-export function ProductShell({ initialData, signOutPath }: { initialData: unknown; signOutPath: string }) {
-  const [data, setData] = useState(initialData as ProductData);
-  const [activeTab, setActiveTab] = useState("match");
+export function ProductShell({ initialData, signOutPath, viewer, plazaData }: { initialData: unknown; signOutPath: string; viewer: CommunityViewer; plazaData: PlazaSnapshot }) {
+  const [data, setData] = useState<ProductData>(() => initialData as ProductData || { user: viewer.authenticated ? { id: viewer.userId, displayName: viewer.displayName, campusVerified: viewer.campusVerified, questionnaireCompleted: viewer.questionnaireCompleted, matchingEnabled: false, role: viewer.role } : null, profile: null, candidate: null, match: null, messages: [] });
+  const params = useSearchParams();
+  const requestedTab = params.get("tab");
+  const activeTab = requestedTab && ["match", "plaza", "chat", "profile"].includes(requestedTab) ? requestedTab : "plaza";
+  const selectedCompanion = getCompanion(params.get("companion") || "");
+  const [joinTarget, setJoinTarget] = useState<string | null>(null);
+  const [joinReason, setJoinReason] = useState("参与讨论");
+  function requireParticipation(reason: string, target = "/community") { setJoinReason(reason); setJoinTarget(target); }
+  function setActiveTab(tab: string, companionId?: string) {
+    const next = new URLSearchParams(window.location.search);
+    next.set("tab", tab); next.delete("join"); next.delete("companion");
+    if (tab !== "plaza") { next.delete("post"); next.delete("compose"); }
+    if (companionId) next.set("companion", companionId);
+    const target = `/community?${next.toString()}`;
+    if (`${window.location.pathname}${window.location.search}` !== target) window.history.pushState(null, "", target);
+  }
+  function chooseCompanion(id: string) {
+    if (!viewer.ready) { requireParticipation("开始体验匹配", `/community?tab=chat&companion=${encodeURIComponent(id)}`); return; }
+    setActiveTab("chat", id);
+  }
   useEffect(() => {
-    const tab = new URLSearchParams(location.search).get("tab");
-    if (tab && ["match", "plaza", "chat", "profile"].includes(tab)) queueMicrotask(() => setActiveTab(tab));
-  }, []);
+    if (!viewer.ready && params.get("join") === "matching") queueMicrotask(() => { setJoinReason("开启匹配"); setJoinTarget("/community?tab=match"); });
+    else if (!viewer.ready && params.get("tab") === "chat" && getCompanion(params.get("companion") || "")) queueMicrotask(() => { setJoinReason("开始体验匹配"); setJoinTarget(`/community?tab=chat&companion=${encodeURIComponent(params.get("companion")!)}`); });
+  }, [viewer.ready, params]);
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
@@ -63,7 +88,7 @@ export function ProductShell({ initialData, signOutPath }: { initialData: unknow
 
   useEffect(() => {
     const matchId = match?.id;
-    if (!matchId) return;
+    if (!matchId || !viewer.ready) return;
     let stopped = false;
     async function pollConversation() {
       try {
@@ -99,11 +124,11 @@ export function ProductShell({ initialData, signOutPath }: { initialData: unknow
     void pollConversation();
     const timer = window.setInterval(() => void pollConversation(), 4000);
     return () => { stopped = true; window.clearInterval(timer); };
-  }, [match?.id]);
+  }, [match?.id, viewer.ready]);
 
   useEffect(() => {
     const modelContext = (navigator as Navigator & { modelContext?: { registerTool: (tool: unknown) => void } }).modelContext;
-    if (!modelContext) return;
+    if (!modelContext || !viewer.ready) return;
     modelContext.registerTool({
       name: "set_matching_enabled",
       description: "开启或暂停同频实验室的高校匹配推荐",
@@ -116,9 +141,10 @@ export function ProductShell({ initialData, signOutPath }: { initialData: unknow
       inputSchema: { type: "object", properties: { message: { type: "string" } }, required: ["message"] },
       execute: async ({ message: text }: { message: string }) => match ? post("/api/messages", { matchId: match.id, body: text }) : { error: "暂无匹配" },
     });
-  }, [match]);
+  }, [match, viewer.ready]);
 
   useEffect(() => {
+    if (!viewer.authenticated) return;
     const saved = window.localStorage.getItem("campus-personality-result-v1");
     if (!saved) return;
     try {
@@ -135,7 +161,7 @@ export function ProductShell({ initialData, signOutPath }: { initialData: unknow
         toast.success("人格测试结果已同步到同频名片");
       }).catch(() => undefined);
     } catch { /* ignore invalid device-local result */ }
-  }, [data.profile?.personalityType, data.profile?.personalityScores]);
+  }, [data.profile?.personalityType, data.profile?.personalityScores, viewer.authenticated]);
 
   const firstName = useMemo(() => data.user?.displayName?.split(/[ ·]/)[0] || "同学", [data.user]);
 
@@ -161,6 +187,7 @@ export function ProductShell({ initialData, signOutPath }: { initialData: unknow
   }
 
   async function toggleMatching(enabled: boolean) {
+    if (!viewer.ready) { requireParticipation("开启匹配", "/community?tab=match"); return; }
     setData((current) => ({ ...current, user: current.user ? { ...current.user, matchingEnabled: enabled } : null }));
     try {
       await post("/api/settings", { matchingEnabled: enabled });
@@ -208,27 +235,26 @@ export function ProductShell({ initialData, signOutPath }: { initialData: unknow
             <span><strong className="block text-[15px] tracking-wide">同频实验室</strong><small className="hidden text-[11px] text-slate-500 sm:block">全国高校人格与关系社区</small></span>
           </Link>
           <div className="flex items-center gap-2">
-            <Button asChild variant="ghost" size="sm"><Link href="/community">逛广场</Link></Button>
             {data.user?.role === "admin" && <Button asChild variant="ghost" size="sm"><a href="/admin" target="_top">管理后台</a></Button>}
-            <Button asChild variant="ghost" size="icon" aria-label="退出登录"><a href={signOutPath} target="_top"><LogOut className="size-4" /></a></Button>
+            {viewer.authenticated ? <Button asChild variant="ghost" size="icon" aria-label="退出登录"><a href={signOutPath} target="_top"><LogOut className="size-4" /></a></Button> : <Button variant="ghost" size="sm" onClick={() => requireParticipation("加入同频", `/community?tab=${activeTab}`)}>登录 / 加入</Button>}
             <div className="grid size-9 place-items-center rounded-full bg-[#e8eef7] text-sm font-semibold text-[#0b1f3a]">{firstName.slice(0, 1)}</div>
           </div>
         </div>
       </header>
 
-      {!data.user?.questionnaireCompleted && (
-        <div className="border-b border-[#ffd8d4] bg-[#fff3f1]">
+      {!viewer.ready && (
+        <div className="border-b border-[#dce5d0] bg-[#edf3e6]">
           <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between sm:px-6">
-            <p className="flex items-center gap-2"><Sparkles className="size-4 text-[#286451]" />完成 20 题相处偏好后，才能进入真实学生推荐池。</p>
-            <Button asChild size="sm" className="bg-[#286451] text-white hover:bg-[#205340]"><a href="/onboarding" target="_top">继续填写 <ArrowRight className="ml-1 size-4" /></a></Button>
+            <p className="flex items-center gap-2"><Sparkles className="size-4 text-[#286451]" />现在可以浏览公开广场；发言、匹配和聊天时，再完成参与准备。</p>
+            <Button size="sm" className="bg-[#286451] text-white hover:bg-[#205340]" onClick={() => requireParticipation("加入社区", `/community?tab=${activeTab}`)}>继续准备 <ArrowRight className="ml-1 size-4" /></Button>
           </div>
         </div>
       )}
 
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
         <div className="mb-7 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-          <div><p className="mb-1 text-sm font-semibold text-[#286451]">你好，{firstName} · {data.profile?.personalityType || "性格结果待同步"}</p><h1 className="font-sans text-2xl font-semibold tracking-tight sm:text-3xl">从一件小事，遇见聊得来的同学</h1></div>
-          <div className="flex items-center gap-3 rounded-2xl border border-[#dfe7f1] bg-white px-4 py-3 shadow-sm"><span><strong className="block text-sm">接受每日推荐</strong><small className="text-slate-500">关闭后不会生成新匹配</small></span><Switch checked={Boolean(data.user?.matchingEnabled)} onCheckedChange={toggleMatching} /></div>
+          <div><p className="mb-1 text-sm font-semibold text-[#286451]">你好，{firstName} · {data.profile?.personalityType || viewer.personalityType}</p><h1 className="font-sans text-2xl font-semibold tracking-tight sm:text-3xl">从一件小事，遇见聊得来的同学</h1></div>
+          <div className="flex items-center gap-3 rounded-2xl border border-[#dfe7f1] bg-white px-4 py-3 shadow-sm"><span><strong className="block text-sm">接受每日推荐</strong><small className="text-slate-500">{viewer.ready ? "关闭后不会生成新匹配" : "完成参与准备后可开启"}</small></span><Switch checked={Boolean(data.user?.matchingEnabled)} onCheckedChange={toggleMatching} /></div>
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="min-w-0 max-w-full">
@@ -279,15 +305,16 @@ export function ProductShell({ initialData, signOutPath }: { initialData: unknow
                   <div className="rounded-[24px] border border-[#dfe2ec] bg-white p-6"><h3 className="mb-4 font-semibold">今日推荐概览</h3><div className="space-y-4 text-sm"><div className="flex items-center justify-between gap-4"><span className="text-slate-500">学校</span><strong className="text-right">{candidate.university}</strong></div><div className="flex items-center justify-between gap-4"><span className="text-slate-500">校区</span><strong className="text-right">{candidate.campus || "未填写"}</strong></div><div className="flex items-center justify-between gap-4"><span className="text-slate-500">来自</span><strong className="text-right">{candidate.hometown || "未填写"}</strong></div><div className="flex items-center justify-between gap-4"><span className="text-slate-500">关系期待</span><strong className="text-right">{lookingForText(candidate.lookingFor)}</strong></div></div><Dialog><DialogTrigger asChild><Button variant="outline" className="mt-5 w-full">查看匹配说明 <Info className="ml-2 size-4" /></Button></DialogTrigger><DialogContent><DialogHeader><DialogTitle>{candidate.score}% 契合度如何得出？</DialogTitle><DialogDescription>系统比较 MBTI 倾向，再结合相处偏好、兴趣和关系期待。分数只用于帮助开启对话，不代表关系质量保证。</DialogDescription></DialogHeader></DialogContent></Dialog></div>
                 </aside>
               </div>
-            ) : <EmptyState />}
+            ) : viewer.ready ? <EmptyState /> : <ParticipationPanel title="认识真实同学，从完成准备开始" description="可以先看看两位官方伙伴的介绍。开始体验匹配或真人推荐时，再完成登录、高校认证、个人资料与匹配问卷。" onContinue={() => requireParticipation("开启匹配", "/community?tab=match")} />}
+            <CompanionMatching hasCandidate={Boolean(candidate && match)} onChoose={chooseCompanion} />
           </TabsContent>
 
-          <TabsContent value="plaza" className="mt-0"><CompanionGuide personalityType={data.profile?.personalityType || ""} />
-            <SocialPlaza currentUserId={data.user?.id || ""} />
+          <TabsContent value="plaza" className="mt-0"><CompanionGuide personalityType={data.profile?.personalityType || viewer.personalityType} />
+            <SocialPlaza currentUserId={data.user?.id || ""} initialData={plazaData} canParticipate={viewer.ready} onRequireParticipation={requireParticipation} />
           </TabsContent>
 
           <TabsContent value="chat" className="mt-0">
-            {!match?.mutual ? (
+            {!viewer.ready ? <ParticipationPanel title="完成准备后，开启你的对话" description="官方伙伴提供校园情境练习；真实同学需要双方表达心意后才能私信。两种对话都会清楚区分。" onContinue={() => requireParticipation("开启聊天", selectedCompanion ? `/community?tab=chat&companion=${selectedCompanion.id}` : "/community?tab=chat")} /> : <><nav className="experience-chat-switcher" aria-label="选择对话"><button type="button" aria-pressed={!selectedCompanion} onClick={() => setActiveTab("chat")}>真实同学<small>{match?.mutual ? candidate?.name : "双向选择后开启"}</small></button>{companionProfiles.map((actor) => <button key={actor.id} type="button" aria-pressed={selectedCompanion?.id === actor.id} onClick={() => chooseCompanion(actor.id)}><Image src={actor.image} alt="" width={40} height={40} /><span>{actor.name}<small>官方虚拟伙伴</small></span></button>)}</nav>{selectedCompanion ? <CompanionConversation key={selectedCompanion.id} companionId={selectedCompanion.id} onExit={() => setActiveTab("match")} onPlaza={() => setActiveTab("plaza")} /> : !match?.mutual ? (
               <section className="mx-auto max-w-3xl rounded-[28px] border border-[#dfe7f1] bg-white px-6 py-20 text-center shadow-sm">
                 <span className="mx-auto grid size-16 place-items-center rounded-2xl bg-[#e8eef7] text-[#294767]"><LockKeyhole className="size-7" /></span>
                 <h2 className="mt-5 text-2xl font-semibold">私信将在双向选择后解锁</h2>
@@ -295,25 +322,30 @@ export function ProductShell({ initialData, signOutPath }: { initialData: unknow
                 <Button className="mt-6 bg-[#286451] hover:bg-[#205340]" onClick={() => setActiveTab("match")}>返回今日匹配 <ArrowRight className="ml-2 size-4" /></Button>
               </section>
             ) : <section className="mx-auto grid min-h-[650px] max-w-5xl overflow-hidden rounded-[24px] border border-[#dfe7f1] bg-white shadow-sm md:grid-cols-[280px_1fr]">
-              <aside className="border-b border-[#e3eaf2] bg-[#f8fafc] p-4 md:border-b-0 md:border-r"><h2 className="px-2 py-3 text-lg font-semibold">私信</h2>{candidate && <button className="flex w-full items-center gap-3 rounded-xl bg-white p-3 text-left shadow-sm">{candidate.photoUrl ? <Image src={candidate.photoUrl} alt="" width={48} height={48} className="size-12 rounded-full object-cover" /> : <span className="grid size-12 shrink-0 place-items-center rounded-full bg-[#dfe8e2] font-semibold text-[#416054]">{candidate.name.slice(0, 1)}</span>}<span className="min-w-0 flex-1"><strong className="block">{candidate.name}</strong><small className="block truncate text-slate-500">{data.messages.at(-1)?.body || "匹配成功，可以开始聊天"}</small></span><span className="size-2 rounded-full bg-[#3ba878]" /></button>}</aside>
+              <aside className="border-b border-[#e3eaf2] bg-[#f8fafc] p-4 md:border-b-0 md:border-r"><h2 className="px-2 py-3 text-lg font-semibold">私信</h2>{candidate && <button className="flex w-full items-center gap-3 rounded-xl bg-white p-3 text-left shadow-sm">{candidate.photoUrl ? <Image src={candidate.photoUrl} alt="" width={48} height={48} className="size-12 rounded-full object-cover" /> : <span className="grid size-12 shrink-0 place-items-center rounded-full bg-[#dfe8e2] font-semibold text-[#416054]">{candidate.name.slice(0, 1)}</span>}<span className="min-w-0 flex-1"><strong className="block">{candidate.name}</strong><small className="block truncate text-slate-500">{data.messages.at(-1)?.body || "匹配成功，可以开始聊天"}</small></span></button>}</aside>
               <div className="flex min-h-[520px] flex-col">
                 <div className="flex items-center gap-3 border-b border-[#e3eaf2] px-5 py-4"><BadgeCheck className="size-5 text-[#2f8a69]" /><div><strong>{candidate?.name || "暂无会话"}</strong><p className="text-xs text-slate-500">校园身份已认证 · 请注意保护个人隐私</p></div></div>
                 <div className="flex-1 space-y-4 overflow-y-auto bg-[#fbfcfe] p-5">{data.messages.map((item) => { const mine = item.senderId === data.user?.id; return <div key={item.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}><div className={`max-w-[78%] rounded-2xl px-4 py-3 text-sm leading-6 ${mine ? "rounded-br-md bg-[#0b1f3a] text-white" : "rounded-bl-md border border-[#e1e8f0] bg-white text-slate-700"}`}>{item.body}<time className={`mt-1 block text-[11px] ${mine ? "text-white/55" : "text-slate-400"}`}>{new Date(item.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></div></div>; })}</div>
                 <form onSubmit={sendMessage} className="flex gap-3 border-t border-[#e3eaf2] p-4"><Input value={message} onChange={(e) => setMessage(e.target.value)} placeholder="说点真诚、轻松的话…" maxLength={500} /><Button disabled={sending || !message.trim()} type="submit" className="bg-[#286451] hover:bg-[#205340]"><Send className="mr-2 size-4" />发送</Button></form>
               </div>
-            </section>}
+            </section>}</>}
           </TabsContent>
 
           <TabsContent value="profile" className="mt-0">
-            <div className="grid gap-6 lg:grid-cols-[1fr_360px]">
-              <section className="rounded-[24px] border border-[#e3e9e3] bg-white p-6 shadow-[0_14px_40px_rgba(23,36,31,.06)] sm:p-8"><div className="flex flex-col gap-5 sm:flex-row sm:items-center"><div className="grid size-20 place-items-center rounded-full bg-[#edf2ee] text-3xl font-semibold text-[#286451]">{firstName.slice(0, 1)}</div><div className="flex-1"><div className="flex flex-wrap items-center gap-2"><h2 className="text-2xl font-semibold">{data.user?.displayName}</h2>{data.user?.campusVerified && <Badge className="bg-[#e4f5ed] text-[#1f7653]"><BadgeCheck className="mr-1 size-3" />高校认证</Badge>}</div><p className="mt-1 text-slate-500">{data.user?.university || "学校待完善"} · {data.profile?.grade || "年级待完善"} · {data.profile?.major || "专业待完善"}</p></div><Button asChild variant="outline"><a href="/onboarding" target="_top"><Settings2 className="mr-2 size-4" />编辑资料与偏好</a></Button></div><div className="mt-8 grid gap-4 border-t border-[#e3e4eb] pt-6 sm:grid-cols-4"><Stat label="MBTI 倾向" value={data.profile?.personalityType || "待测试"} /><Stat label="资料审核" value={data.profile?.reviewStatus === "approved" ? "已通过" : "待审核"} /><Stat label="相处偏好" value={data.user?.questionnaireCompleted ? "20 / 20" : "未完成"} /><Stat label="匹配状态" value={data.user?.matchingEnabled ? "进行中" : "已暂停"} /></div><div className="mt-7"><h3 className="font-semibold">关于我</h3><p className="mt-2 leading-7 text-slate-600">{data.profile?.bio || "补充一段真实的自我介绍，让推荐对象更好地认识你。"}</p></div></section>
-              <aside className="space-y-4"><Link href="/" target="_top" className="flex items-center gap-4 rounded-2xl border border-[#e3e9e3] bg-white p-5 transition hover:border-[#286451]"><span className="grid size-10 place-items-center rounded-full bg-[#edf2ee] text-[#286451]"><BrainCircuit className="size-5" /></span><span className="flex-1"><strong className="block">MBTI × 关系性格</strong><small className="text-slate-500">重测后自动同步完整结果</small></span><ChevronRight className="size-5 text-slate-400" /></Link><a href="/onboarding" target="_top" className="flex items-center gap-4 rounded-2xl border border-[#e3e9e3] bg-white p-5 transition hover:border-[#286451]"><span className="grid size-10 place-items-center rounded-full bg-[#edf0ed] text-[#725b46]"><BookOpen className="size-5" /></span><span className="flex-1"><strong className="block">相处偏好</strong><small className="text-slate-500">查看与更新 5 组、20 题匹配信息</small></span><ChevronRight className="size-5 text-slate-400" /></a><div className="rounded-2xl border border-[#e3e9e3] bg-white p-5"><ShieldCheck className="mb-3 size-6 text-[#2f8a69]" /><h3 className="font-semibold">安全中心</h3><p className="mt-2 text-sm leading-6 text-slate-500">平台不会公开高校邮箱或学号。遇到不适内容，请及时举报或停止联系。</p></div></aside>
-            </div>
+            {!viewer.ready ? <><div className="experience-personality-card"><BrainCircuit size={30} /><div><p>你的性格手记</p><h2>{viewer.personalityType}</h2><span>测评结果已保留。资料和匹配偏好可以之后再完善。</span></div><Link href="/test">查看完整报告<ArrowRight size={15} /></Link></div><ParticipationPanel title="准备好时，再介绍一下自己" description="资料草稿按账号保存，匹配问卷支持分次完成。完成准备后，再参与广场与匹配。" onContinue={() => requireParticipation("完善资料", "/community?tab=profile")} /></> : <div className="grid gap-6 lg:grid-cols-[1fr_360px]">
+              <section className="rounded-[24px] border border-[#e3e9e3] bg-white p-6 shadow-[0_14px_40px_rgba(23,36,31,.06)] sm:p-8"><div className="flex flex-col gap-5 sm:flex-row sm:items-center"><div className="grid size-20 place-items-center rounded-full bg-[#edf2ee] text-3xl font-semibold text-[#286451]">{firstName.slice(0, 1)}</div><div className="flex-1"><div className="flex flex-wrap items-center gap-2"><h2 className="text-2xl font-semibold">{data.user?.displayName}</h2>{data.user?.campusVerified && <Badge className="bg-[#e4f5ed] text-[#1f7653]"><BadgeCheck className="mr-1 size-3" />高校认证</Badge>}</div><p className="mt-1 text-slate-500">{data.user?.university || "学校待完善"} · {data.profile?.grade || "年级待完善"} · {data.profile?.major || "专业待完善"}</p></div><Button asChild variant="outline"><a href="/onboarding?return_to=%2Fcommunity%3Ftab%3Dprofile" target="_top"><Settings2 className="mr-2 size-4" />编辑资料与偏好</a></Button></div><div className="mt-8 grid gap-4 border-t border-[#e3e4eb] pt-6 sm:grid-cols-4"><Stat label="MBTI 倾向" value={data.profile?.personalityType || "待测试"} /><Stat label="资料审核" value={data.profile?.reviewStatus === "approved" ? "已通过" : "待审核"} /><Stat label="相处偏好" value={data.user?.questionnaireCompleted ? "20 / 20" : "未完成"} /><Stat label="匹配状态" value={data.user?.matchingEnabled ? "进行中" : "已暂停"} /></div><div className="mt-7"><h3 className="font-semibold">关于我</h3><p className="mt-2 leading-7 text-slate-600">{data.profile?.bio || "补充一段真实的自我介绍，让推荐对象更好地认识你。"}</p></div></section>
+              <aside className="space-y-4"><Link href="/" target="_top" className="flex items-center gap-4 rounded-2xl border border-[#e3e9e3] bg-white p-5 transition hover:border-[#286451]"><span className="grid size-10 place-items-center rounded-full bg-[#edf2ee] text-[#286451]"><BrainCircuit className="size-5" /></span><span className="flex-1"><strong className="block">MBTI × 关系性格</strong><small className="text-slate-500">重测后自动同步完整结果</small></span><ChevronRight className="size-5 text-slate-400" /></Link><a href="/onboarding?return_to=%2Fcommunity%3Ftab%3Dprofile" target="_top" className="flex items-center gap-4 rounded-2xl border border-[#e3e9e3] bg-white p-5 transition hover:border-[#286451]"><span className="grid size-10 place-items-center rounded-full bg-[#edf0ed] text-[#725b46]"><BookOpen className="size-5" /></span><span className="flex-1"><strong className="block">相处偏好</strong><small className="text-slate-500">查看与更新 5 组、20 题匹配信息</small></span><ChevronRight className="size-5 text-slate-400" /></a><div className="rounded-2xl border border-[#e3e9e3] bg-white p-5"><ShieldCheck className="mb-3 size-6 text-[#2f8a69]" /><h3 className="font-semibold">安全中心</h3><p className="mt-2 text-sm leading-6 text-slate-500">平台不会公开高校邮箱或学号。遇到不适内容，请及时举报或停止联系。</p></div></aside>
+            </div>}
           </TabsContent>
         </Tabs>
       </div>
+      <ParticipationDialog viewer={viewer} target={joinTarget} reason={joinReason} onClose={() => setJoinTarget(null)} />
     </main>
   );
+}
+
+function ParticipationPanel({ title, description, onContinue }: { title: string; description: string; onContinue: () => void }) {
+  return <section className="experience-participation-panel"><span><LockKeyhole size={23} /></span><div><h2>{title}</h2><p>{description}</p></div><Button onClick={onContinue}>完成参与准备<ArrowRight size={15} /></Button></section>;
 }
 
 function Stat({ label, value }: { label: string; value: string }) {

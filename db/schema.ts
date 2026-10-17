@@ -1,4 +1,4 @@
-import { blob, index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { blob, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable(
   "users",
@@ -262,3 +262,12 @@ export const avatarImages = sqliteTable("avatar_images", {
   bytes: blob("bytes", { mode: "buffer" }).notNull(),
   updatedAt: text("updated_at").notNull(),
 });
+
+export const companionExperiences = sqliteTable("companion_experiences", {
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  companionId: text("companion_id").notNull(),
+  sceneId: text("scene_id").notNull(),
+  choicesJson: text("choices_json").notNull().default("[]"),
+  revision: integer("revision").notNull().default(1),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [primaryKey({ columns: [table.userId, table.companionId] })]);

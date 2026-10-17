@@ -202,6 +202,39 @@ try {
   assert(!(await action("/api/plaza", tokens.a, { action: "add_comment", postId: -99999, body: "不存在的话题" })).response.ok, "未知官方话题 ID 无法写入评论");
   assert(Number(db.prepare("SELECT COUNT(*) AS count FROM users").get().count) === userCount, "虚拟伙伴始终不进入真人账号与匹配池");
 
+  assert((await guest("/api/companions?companion=official-xiaotong")).response.status === 401, "游客不能直接读取虚拟体验对话");
+  assert((await request("/api/companions?companion=official-xiaotong", "", { headers: { cookie: freshCookie } })).response.status === 403, "准备不完整的账号不能读取虚拟体验对话");
+  assert((await request("/api/companions", "", { method: "POST", body: JSON.stringify({ companionId: "official-xiaotong", action: "start", sceneId: "class-break", revision: 0 }), headers: { cookie: freshCookie } })).response.status === 403, "虚拟体验同样要求全部四项参与准备");
+  const safePreview = await guest("/community?tab=match");
+  assert(safePreview.response.ok && safePreview.payload.includes("体验匹配") && !safePreview.payload.includes('"email":"a@example.edu.cn"') && !safePreview.payload.includes('"candidate":{"id":"user-'), "游客可以看体验介绍，但页面不包含真人候选资料");
+  const beforeExperience = { users: db.prepare("SELECT COUNT(*) AS count FROM users").get().count, matches: db.prepare("SELECT COUNT(*) AS count FROM matches").get().count, messages: db.prepare("SELECT COUNT(*) AS count FROM messages").get().count };
+  const emptyExperience = await request("/api/companions?companion=official-xiaotong", tokens.a);
+  assert(emptyExperience.response.ok && emptyExperience.payload.data.started === false && db.prepare("SELECT COUNT(*) AS count FROM companion_experiences").get().count === 0, "查看体验不自动创建会话或伪造双向选择");
+  const startedExperience = await action("/api/companions", tokens.a, { companionId: "official-xiaotong", action: "start", sceneId: "class-break", revision: 0 });
+  assert(startedExperience.response.ok && startedExperience.payload.data.revision === 1 && startedExperience.payload.data.options.length === 2, "认证用户主动开始校园破冰情境");
+  const firstChoice = await action("/api/companions", tokens.a, { companionId: "official-xiaotong", action: "choose", choiceId: "a", revision: 1 });
+  assert(firstChoice.response.ok && firstChoice.payload.data.revision === 2 && firstChoice.payload.data.messages.some((item) => item.role === "user") && firstChoice.payload.data.messages.some((item) => item.text.includes("共同经历")), "情境选择保存真实进度并返回对应预设回应");
+  assert((await action("/api/companions", tokens.a, { companionId: "official-xiaotong", action: "choose", choiceId: "b", revision: 1 })).response.status === 409, "旧版本或重复点击不能重复追加对话");
+  assert((await action("/api/companions", tokens.a, { companionId: "official-xiaotong", action: "choose", choiceId: "任意自由输入", revision: 2 })).response.status === 400, "虚拟体验只接受当前预设选项");
+  assert((await action("/api/companions", tokens.a, { companionId: "fake-student", action: "start", sceneId: "class-break", revision: 0 })).response.status === 400, "不能伪造第三个虚拟角色");
+  assert((await action("/api/companions", tokens.a, { companionId: "official-xiaopin", action: "start", sceneId: "class-break", revision: 0 })).response.status === 400, "不能跨角色指定不属于该伙伴的情境");
+  const otherExperience = await request("/api/companions?companion=official-xiaotong&userId=user-a", tokens.b);
+  assert(otherExperience.payload.data.started === false, "指定他人 userId 也无法读取别人的体验记录");
+  let experienceRevision = 2;
+  for (let i = 0; i < 2; i++) {
+    const nextChoice = await action("/api/companions", tokens.a, { companionId: "official-xiaotong", action: "choose", choiceId: "b", revision: experienceRevision });
+    assert(nextChoice.response.ok, "校园情境可以逐步完成");
+    experienceRevision = nextChoice.payload.data.revision;
+  }
+  const completedExperience = await request("/api/companions?companion=official-xiaotong", tokens.a);
+  assert(completedExperience.payload.data.complete && completedExperience.payload.data.options.length === 0, "情境结束后明确完成，不制造无限自动聊天");
+  assert((await action("/api/companions", tokens.a, { companionId: "official-xiaotong", action: "choose", choiceId: "a", revision: experienceRevision })).response.status === 400, "已完成的情境不会继续接受伪造回复");
+  const restartedExperience = await action("/api/companions", tokens.a, { companionId: "official-xiaotong", action: "start", sceneId: "shared-interest", revision: experienceRevision });
+  assert(restartedExperience.response.ok && restartedExperience.payload.data.sceneId === "shared-interest" && restartedExperience.payload.data.messages.length === 1, "用户可以主动换到另一段校园情境");
+  const capybaraExperience = await action("/api/companions", tokens.a, { companionId: "official-xiaopin", action: "start", sceneId: "campus-walk", revision: 0 });
+  assert(capybaraExperience.response.ok && capybaraExperience.payload.data.sceneId === "campus-walk" && db.prepare("SELECT COUNT(*) AS count FROM companion_experiences WHERE user_id='user-a'").get().count === 2, "两位伙伴分别保存对话且每人每角色只有一份当前记录");
+  assert(db.prepare("SELECT COUNT(*) AS count FROM users").get().count === beforeExperience.users && db.prepare("SELECT COUNT(*) AS count FROM matches").get().count === beforeExperience.matches && db.prepare("SELECT COUNT(*) AS count FROM messages").get().count === beforeExperience.messages, "体验不会创建虚假学生、占用真人推荐或混入真人私信");
+
   const image = new Uint8Array(await sharp({ create: { width: 32, height: 32, channels: 3, background: "#4b37e8" } }).png().toBuffer());
   async function uploadAvatar() {
     const form = new FormData();
@@ -278,6 +311,8 @@ try {
   assert((await fetch(`${baseUrl}${replaced.payload.data.url}`)).ok, "应用进程重启后头像仍可访问");
   const restored = await request(`/api/messages?matchId=${match.id}&afterId=0`, tokens.b);
   assert(restored.response.ok && restored.payload.data.messages.length === 2, "应用进程重启后双方私信仍可读取");
+  const restoredExperience = await request("/api/companions?companion=official-xiaotong", tokens.a);
+  assert(restoredExperience.response.ok && restoredExperience.payload.data.sceneId === "shared-interest" && restoredExperience.payload.data.revision === restartedExperience.payload.data.revision, "应用重启后虚拟体验进度仍属于原账号并可继续");
   console.log("\n真实双账号匹配、私信与社交广场验收全部通过。");
 } catch (error) {
   console.error(serverLog);

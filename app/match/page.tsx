@@ -1,16 +1,11 @@
 import { redirect } from "next/navigation";
-import { authSignOutPath, getCurrentIdentity } from "@/lib/auth";
-import { getParticipationStatus } from "@/lib/participation";
-import { ProductShell } from "@/components/product-shell";
-import { ensureUser, getProductSnapshot } from "@/db/repository";
+import { getCompanion } from "@/lib/companion-experience";
 
 export const dynamic = "force-dynamic";
 
-export default async function MatchPage() {
-  const identity = await getCurrentIdentity();
-  if (!identity) redirect("/community?join=matching");
-  const user = await ensureUser(identity);
-  if (!(await getParticipationStatus(user.id)).ready) redirect("/community?join=matching");
-  const snapshot = await getProductSnapshot(user.id);
-  return <ProductShell initialData={snapshot} signOutPath={authSignOutPath("/")} />;
+export default async function MatchPage({ searchParams }: { searchParams: Promise<{ tab?: string; companion?: string }> }) {
+  const query = await searchParams;
+  const params = new URLSearchParams({ tab: query.tab && ["match", "plaza", "chat", "profile"].includes(query.tab) ? query.tab : "match" });
+  if (query.companion && getCompanion(query.companion)) params.set("companion", query.companion);
+  redirect(`/community?${params.toString()}`);
 }
