@@ -1,10 +1,11 @@
-import { resolveReport, reviewProfile, reviewVerification } from "@/db/repository";
+import { resolveReport, reviewProfile } from "@/db/repository";
+import { reviewStudentVerification } from "@/db/student-verification";
 import { fail, ok } from "@/lib/api";
-import { requireAppUser } from "@/lib/session";
+import { requireApiUser } from "@/lib/session";
 
 export async function POST(request: Request) {
   try {
-    const user = await requireAppUser("/admin");
+    const user = await requireApiUser();
     if (user.role !== "admin") return fail(new Error("仅管理员可以操作。"), 403);
     const body = await request.json() as Record<string, unknown>;
     if (body.action === "resolve_report") {
@@ -14,10 +15,10 @@ export async function POST(request: Request) {
       return ok(await reviewProfile(user.id, String(body.userId), body.reviewStatus === "rejected" ? "rejected" : "approved"));
     }
     if (body.action === "review_verification") {
-      return ok(await reviewVerification(user.id, Number(body.requestId), body.status === "rejected" ? "rejected" : "approved"));
+      return ok(await reviewStudentVerification(user.id, Number(body.requestId), String(body.status), body));
     }
     return fail(new Error("不支持的管理操作。"));
   } catch (error) {
-    return fail(error, 403);
+    return fail(error);
   }
 }

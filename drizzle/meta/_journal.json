@@ -43,6 +43,13 @@
       "when": 1792219101804,
       "tag": "0005_companion_experiences",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1792223310313,
+      "tag": "0006_student_verification_evidence",
+      "breakpoints": true
     }
   ]
 }

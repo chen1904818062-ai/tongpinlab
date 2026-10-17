@@ -131,15 +131,43 @@ try {
   await until("document.querySelector('.premium-login-card').innerText.includes('本地演示验证码：')");
   const loginCode = await evaluate("document.querySelector('.premium-login-card').innerText.match(/本地演示验证码：(\\d{6})/)[1]");
   await input("#login-code", loginCode); await click("document.querySelector('.premium-login-card button[type=submit]')");
-  await until("location.pathname==='/onboarding' && document.body.innerText.includes('选择最方便的学生认证方式')");
+  await until("location.pathname==='/onboarding' && document.body.innerText.includes('核验当前在读身份')");
   assert(await evaluate("new URLSearchParams(location.search).get('return_to')==='/community?post=-1003'"), "New account email login preserves original topic through actual redirect");
-  await input(".premium-onboarding section input", "浏览器测试大学");
-  await input("input[placeholder='name@university.edu.cn']", "browser-flow@local.edu.cn");
-  await click("Array.from(document.querySelectorAll('button')).find(item=>item.innerText==='获取验证码')");
-  await until("document.body.innerText.includes('演示验证码：')");
-  const campusCode = await evaluate("document.body.innerText.match(/演示验证码：(\\d{6})/)[1]");
-  await input("input[placeholder='请输入验证码']", campusCode);
-  await click("Array.from(document.querySelectorAll('button')).find(item=>item.innerText.includes('验证并继续'))");
+  await until("Boolean(document.querySelector('#verification-university'))");
+  await capture("student-verification-form-desktop");
+  await click("Array.from(document.querySelectorAll('.verification-step button')).find(item=>item.innerText.includes('学生证与注册证明'))");
+  for (const width of [390,320]) {
+    await send("Emulation.setDeviceMetricsOverride", {width,height:844,deviceScaleFactor:1,mobile:true}); await pause(300);
+    assert(await evaluate("document.documentElement.scrollWidth<=innerWidth && document.querySelectorAll('.verification-step input[type=file]').length===2"), `${width}px student card form and private photo inputs fit viewport`);
+    await evaluate("document.querySelector('.verification-step').scrollIntoView({behavior:'instant'})"); await capture(`student-card-mobile-${width}`);
+  }
+  await send("Emulation.setDeviceMetricsOverride", {width:1440,height:1080,deviceScaleFactor:1,mobile:false});
+  await click("Array.from(document.querySelectorAll('.verification-step button')).find(item=>item.innerText.includes('学信网学籍报告'))");
+  await input("#verification-university", "浏览器测试大学");
+  await input("#verification-name", "测试同学");
+  await input("#verification-student-number", "BROWSER2026001");
+  await input("#verification-enrollment-until", "2030-06-30");
+  await input("#verification-code", "BROWSERTEST2026A");
+  await click("document.querySelector('.verification-step input[type=checkbox]')");
+  await click("document.querySelector('.verification-step button[type=submit]')");
+  await until("document.body.innerText.includes('认证申请审核中')");
+  assert(await evaluate("!document.querySelector('input[placeholder=\"例如：电气工程\"]')"), "Submitting enrollment proof waits for administrator instead of auto-approving");
+  await capture("student-verification-pending");
+  const studentCookies = (await send("Network.getCookies", { urls: [base] })).cookies;
+  const studentSession = studentCookies.find(item => item.name === "tongpin_session");
+  await send("Network.setCookie", { name: "tongpin_session", value: "social-flow-user-a", url: base });
+  await nav("/admin");
+  await click("Array.from(document.querySelectorAll('[role=tab]')).find(item=>item.innerText.includes('高校认证'))");
+  await click("Array.from(document.querySelectorAll('button')).find(item=>item.innerText.includes('查看材料并审核'))");
+  await until("document.querySelector('.verification-review')?.innerText.includes('BROWSERTEST2026A')");
+  assert(await evaluate("document.querySelector('.verification-review a').href==='https://www.chsi.com.cn/xlcx/bgcx.jsp' && document.querySelectorAll('.verification-review input[type=checkbox]').length===3"), "Owner review opens original report code, official CHSI link and required checklist");
+  await capture("admin-verification-review");
+  for (let index=0;index<3;index++) await click("document.querySelectorAll('.verification-review input[type=checkbox]')["+index+"]");
+  await input(".verification-review textarea", "本地浏览器虚构夹具审核通过", "HTMLTextAreaElement");
+  await click("Array.from(document.querySelectorAll('.verification-review button')).find(item=>item.innerText.includes('确认核验通过'))");
+  await until("!document.querySelector('.verification-review')");
+  await send("Network.setCookie", { name: "tongpin_session", value: studentSession.value, url: base });
+  await nav("/onboarding?return_to="+encodeURIComponent('/community?post=-1003'));
   await until("Boolean(document.querySelector('input[placeholder=\"例如：电气工程\"]'))");
   await input("input[placeholder='匹配对象将看到这个名字']", "浏览器新同学");
   await input("input[placeholder='例如：电气工程']", "计算机");
@@ -193,6 +221,10 @@ try {
   }
   assert(db.prepare("SELECT COUNT(*) AS count FROM companion_experiences WHERE user_id=?").get(newUser.id).count===2,"Each partner's conversation is saved under the current student account");
   assert(errors.length === 0, "No uncaught browser exceptions during community and preparation flow");
+  await send("Page.navigate", {url:base+"/logout"});
+  await until("document.readyState==='complete' && location.pathname==='/'");
+  assert(await evaluate("location.pathname==='/' && !location.href.includes('0.0.0.0')"), "Actual browser logout returns to public home without internal server address");
+  assert(!(await send("Network.getCookies", {urls:[base]})).cookies.some(item=>item.name==='tongpin_session'), "Browser session cookie is removed after logout");
   writeFileSync(path.join(qa,"checks.json"),JSON.stringify({ checks, errors },null,2));
   console.log("Screenshots: " + qa);
 } catch (error) { if (capture) await capture("failure"); throw error; }

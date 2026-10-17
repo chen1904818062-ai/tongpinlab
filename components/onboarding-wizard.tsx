@@ -1,12 +1,13 @@
 "use client";
 
+import { StudentVerificationStep } from "@/components/student-verification-step";
 import { BrandMark } from "@/components/brand-mark";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { toast } from "sonner";
-import { ArrowLeft, ArrowRight, BadgeCheck, Camera, Check, FileCheck2, GraduationCap, Heart, IdCard, Loader2, LockKeyhole, LogOut, Mail, ShieldCheck, Sparkles } from "lucide-react";
+import { ArrowLeft, ArrowRight, BadgeCheck, Camera, Check, Heart, Loader2, LockKeyhole, LogOut, Sparkles } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,18 +40,9 @@ function startingStep(data: InitialData) {
 
 export function OnboardingWizard({ initialData, signOutPath, returnTo = "/community" }: { initialData: InitialData; signOutPath: string; returnTo?: string }) {
   const [step, setStep] = useState(() => startingStep(initialData));
-  const [email, setEmail] = useState(initialData.user?.campusEmail || "");
-  const [code, setCode] = useState("");
-  const [codeSent, setCodeSent] = useState(false);
-  const [demoCode, setDemoCode] = useState("");
-  const [verificationMethod, setVerificationMethod] = useState<"campus_email" | "chsi_code" | "student_card">((initialData.user?.verificationMethod as "campus_email" | "chsi_code" | "student_card") || "campus_email");
-  const [university, setUniversity] = useState(initialData.user?.university || "");
-  const [verificationIdentifier, setVerificationIdentifier] = useState("");
-  const [verificationNote, setVerificationNote] = useState("");
-  const [verificationStatus, setVerificationStatus] = useState(initialData.user?.verificationStatus || "unverified");
   const [busy, setBusy] = useState(false);
   const [questionnaireCompleted, setQuestionnaireCompleted] = useState(Boolean(initialData.user?.questionnaireCompleted));
-  const [campusVerified, setCampusVerified] = useState(Boolean(initialData.user?.campusVerified));
+  const [campusVerified] = useState(Boolean(initialData.user?.campusVerified));
   const [profileReady, setProfileReady] = useState(Boolean(initialData.profile?.major && initialData.profile?.gender && initialData.profile?.grade && initialData.profile?.bio));
   const [answers, setAnswers] = useState(initialData.answers);
   const [profile, setProfile] = useState({
@@ -97,12 +89,6 @@ export function OnboardingWizard({ initialData, signOutPath, returnTo = "/commun
   }, [answers, step, busy, draftReady, markAnswersSaved, saveRetry]);
 
   useEffect(() => {
-    if (email) return;
-    const pendingEmail = window.localStorage.getItem("campus-login-email");
-    if (pendingEmail) queueMicrotask(() => setEmail(pendingEmail));
-  }, [email]);
-
-  useEffect(() => {
     const saved = window.localStorage.getItem("campus-personality-result-v1");
     if (!saved) return;
     try {
@@ -113,43 +99,6 @@ export function OnboardingWizard({ initialData, signOutPath, returnTo = "/commun
 
   function updateProfile(key: string, value: string) {
     setProfile((current) => ({ ...current, [key]: value }));
-  }
-
-  async function sendCode() {
-    setBusy(true);
-    try {
-      const result = await post<{ delivery: "email" | "demo"; demoCode?: string }>({ action: "send_code", email });
-      setCodeSent(true);
-      setDemoCode(result.demoCode || "");
-      toast.success(result.delivery === "email" ? "验证码已发送到校园邮箱" : "演示验证码已生成");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "发送失败");
-    } finally { setBusy(false); }
-  }
-
-  async function verifyCode() {
-    setBusy(true);
-    try {
-      await post({ action: "verify_code", email, code, university });
-      window.localStorage.removeItem("campus-login-email");
-      setCampusVerified(true);
-      setVerificationStatus("approved");
-      toast.success("校园身份验证成功");
-      setStep(1);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "验证失败");
-    } finally { setBusy(false); }
-  }
-
-  async function submitManualVerification() {
-    setBusy(true);
-    try {
-      await post({ action: "submit_verification", method: verificationMethod, university, identifier: verificationIdentifier, note: verificationNote });
-      setVerificationStatus("pending");
-      toast.success("认证材料已提交，审核结果会保存在这里");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "提交失败");
-    } finally { setBusy(false); }
   }
 
   async function saveBasicProfile() {
@@ -235,8 +184,8 @@ export function OnboardingWizard({ initialData, signOutPath, returnTo = "/commun
         </aside>
 
         <section className="min-w-0">
-          <div className="onboarding-save-note"><span>{saveStatus || "资料草稿会保存在当前设备；验证码不保存。"}</span>{saveStatus.includes("未同步") && <button type="button" onClick={() => setSaveRetry((value) => value + 1)}>重试保存</button>}{verificationStatus === "pending" && <button type="button" onClick={() => window.location.reload()}>刷新认证结果</button>}</div>
-          {step === 0 && <EmailStep email={email} setEmail={setEmail} code={code} setCode={setCode} codeSent={codeSent} demoCode={demoCode} busy={busy} sendCode={sendCode} verifyCode={verifyCode} method={verificationMethod} setMethod={setVerificationMethod} university={university} setUniversity={setUniversity} identifier={verificationIdentifier} setIdentifier={setVerificationIdentifier} note={verificationNote} setNote={setVerificationNote} status={verificationStatus} submitManual={submitManualVerification} />}
+          <div className="onboarding-save-note"><span>{saveStatus || "资料草稿会保存在当前设备；验证码不保存。"}</span>{saveStatus.includes("未同步") && <button type="button" onClick={() => setSaveRetry((value) => value + 1)}>重试保存</button>}</div>
+          {step === 0 && <StudentVerificationStep university={initialData.user?.university} status={initialData.user?.verificationStatus} />}
           {step === 1 && <ProfileStep profile={profile} updateProfile={updateProfile} busy={busy} onSave={saveBasicProfile} />}
           {step >= 2 && step <= lastQuestionStep && <QuestionStep step={step} answers={answers} setAnswers={setAnswers} busy={busy} onSave={saveSection} onBack={() => setStep(step - 1)} />}
           {step === completeStep && <CompleteStep returnTo={returnTo} onEdit={() => setStep(1)} onEditQuestionnaire={() => setStep(2)} />}
@@ -248,35 +197,6 @@ export function OnboardingWizard({ initialData, signOutPath, returnTo = "/commun
 
 function CardShell({ eyebrow, title, description, children }: { eyebrow: string; title: string; description: string; children: React.ReactNode }) {
   return <div className="rounded-[28px] border border-[#e3e9e3] bg-white p-5 shadow-[0_16px_50px_rgba(23,36,31,.05)] sm:p-8"><p className="text-xs font-semibold uppercase tracking-[.18em] text-[#6e6e73]">{eyebrow}</p><h2 className="mt-3 font-sans text-2xl font-semibold tracking-tight sm:text-3xl">{title}</h2><p className="mt-2 max-w-2xl leading-7 text-slate-500">{description}</p><div className="mt-8">{children}</div></div>;
-}
-
-type VerificationMethod = "campus_email" | "chsi_code" | "student_card";
-type EmailStepProps = { email: string; setEmail: (v: string) => void; code: string; setCode: (v: string) => void; codeSent: boolean; demoCode: string; busy: boolean; sendCode: () => void; verifyCode: () => void; method: VerificationMethod; setMethod: (v: VerificationMethod) => void; university: string; setUniversity: (v: string) => void; identifier: string; setIdentifier: (v: string) => void; note: string; setNote: (v: string) => void; status: string; submitManual: () => void };
-
-function EmailStep(props: EmailStepProps) {
-  const methods = [
-    { id: "campus_email" as const, icon: <Mail />, title: "高校官方邮箱", text: "验证码自动通过，推荐" },
-    { id: "chsi_code" as const, icon: <GraduationCap />, title: "学信网验证码", text: "提交后由后台审核" },
-    { id: "student_card" as const, icon: <IdCard />, title: "学生证人工认证", text: "适合没有校园邮箱" },
-  ];
-  return <CardShell eyebrow="第 1 步 · 高校身份" title="选择最方便的学生认证方式" description="面向全国高校，不再限定某一所学校。认证信息仅用于核验，不会展示给匹配对象。">
-    <div className="grid gap-3 sm:grid-cols-3">{methods.map((item) => <button key={item.id} type="button" onClick={() => props.setMethod(item.id)} className={`rounded-2xl border p-4 text-left transition ${props.method === item.id ? "border-[#286451] bg-[#edf3e9] ring-2 ring-[#286451]/10" : "border-[#e3e9e3] bg-white hover:border-[#8ca780]"}`}><span className="text-[#286451] [&>svg]:size-5">{item.icon}</span><strong className="mt-3 block text-sm">{item.title}</strong><small className="mt-1 block text-[#6e6e73]">{item.text}</small></button>)}</div>
-    {props.status === "pending" && <div className="mt-6 flex gap-3 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900"><FileCheck2 className="size-5 shrink-0" /><div><strong>认证申请审核中</strong><p className="mt-1 text-amber-800">管理员通过后即可继续；也可以切换到高校邮箱即时验证。</p></div></div>}
-    <div className="mt-7 max-w-2xl space-y-5"><div><label className="mb-2 block text-sm font-medium">学校名称</label><Input value={props.university} onChange={(e) => props.setUniversity(e.target.value)} placeholder="例如：北京大学" className="h-11" /></div>
-      {props.method === "campus_email" ? <>
-        <div><label className="mb-2 block text-sm font-medium">高校官方邮箱</label><div className="flex flex-col gap-3 sm:flex-row"><Input type="email" value={props.email} onChange={(e) => props.setEmail(e.target.value)} placeholder="name@university.edu.cn" className="h-11" /><Button variant="outline" onClick={props.sendCode} disabled={props.busy || !props.email || !props.university}>{props.codeSent ? "重新获取" : "获取验证码"}</Button></div><p className="mt-2 text-xs text-[#858c9e]">支持以 .edu.cn、.edu 或 .ac.cn 结尾的学校官方域名。</p></div>
-        {props.codeSent && props.demoCode && <div className="rounded-xl border border-[#d8d2ff] bg-[#f4f2ff] p-4 text-sm text-[#4333a7]"><strong>演示验证码：{props.demoCode}</strong><p className="mt-1 text-[#6d61b4]">当前发信服务未配置，验证码随机生成并在 10 分钟内有效。</p></div>}
-        {props.codeSent && !props.demoCode && <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800"><strong>验证码已发送</strong><p className="mt-1">请查看学校邮箱收件箱和垃圾邮件目录。</p></div>}
-        <div><label className="mb-2 block text-sm font-medium">6 位验证码</label><Input value={props.code} onChange={(e) => props.setCode(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="请输入验证码" className="h-11 max-w-xs tracking-[.35em]" /></div>
-        <Button size="lg" onClick={props.verifyCode} disabled={props.busy || props.code.length !== 6 || !props.university} className="rounded-full bg-[#286451] hover:bg-[#205340]">{props.busy ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Mail className="mr-2 size-4" />}验证并继续</Button>
-      </> : <>
-        <div><label className="mb-2 block text-sm font-medium">{props.method === "chsi_code" ? "学信网在线验证码" : "学生证信息"}</label><Input value={props.identifier} onChange={(e) => props.setIdentifier(e.target.value)} placeholder={props.method === "chsi_code" ? "填写在线验证报告验证码" : "填写学号后四位与有效期，例如 2048 / 2027-06"} className="h-11" /></div>
-        <div><label className="mb-2 block text-sm font-medium">补充说明（可选）</label><Textarea value={props.note} onChange={(e) => props.setNote(e.target.value)} placeholder={props.method === "student_card" ? "请说明院系、当前年级；图片上传能力将在下一版接入" : "可补充院系或报告有效期"} className="min-h-24" /></div>
-        <Button size="lg" onClick={props.submitManual} disabled={props.busy || props.identifier.trim().length < 4 || props.university.trim().length < 2} className="rounded-full bg-[#286451] hover:bg-[#205340]">{props.busy ? <Loader2 className="mr-2 size-4 animate-spin" /> : <FileCheck2 className="mr-2 size-4" />}提交人工审核</Button>
-      </>}
-      <div className="flex gap-3 border-t border-[#e6e7ee] pt-5 text-sm text-[#68708a]"><ShieldCheck className="size-5 shrink-0 text-[#2f8a69]" /><p>每个认证凭据仅可绑定一个账号。当前版本不采集身份证号，也不会向其他用户展示学校邮箱或学号。</p></div>
-    </div>
-  </CardShell>;
 }
 
 function ProfileStep({ profile, updateProfile, busy, onSave }: { profile: Record<string, string>; updateProfile: (key: string, value: string) => void; busy: boolean; onSave: () => void }) {

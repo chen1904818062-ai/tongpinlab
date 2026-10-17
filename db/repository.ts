@@ -6,6 +6,8 @@ import { assertParticipationReady } from "@/lib/participation";
 import { getOfficialTopic } from "@/lib/companions";
 import { getOfficialPlazaPosts } from "@/db/community";
 import { allQuestions, demoCandidate, questionSections } from "@/lib/product-data";
+import { validStudentCertification } from "@/lib/student-verification";
+import { purgeVerificationEvidence } from "@/db/student-verification";
 
 type RecordValue = Record<string, unknown>;
 
@@ -130,7 +132,8 @@ function normalizeUser(user: RecordValue) {
     displayName: String(user.display_name ?? "同学"),
     email: String(user.email ?? ""),
     campusEmail: user.campus_email ? String(user.campus_email) : null,
-    campusVerified: asBool(user.campus_verified),
+    campusVerified: validStudentCertification(user),
+    verifiedUntil: user.verified_until ? String(user.verified_until) : null,
     university: user.university ? String(user.university) : null,
     verificationMethod: user.verification_method ? String(user.verification_method) : null,
     verificationStatus: String(user.verification_status ?? (asBool(user.campus_verified) ? "approved" : "unverified")),
@@ -196,6 +199,8 @@ export async function getProductSnapshot(userId: string) {
       JOIN users other ON other.id = CASE WHEN m.user_a_id = ? THEN m.user_b_id ELSE m.user_a_id END
       WHERE (m.user_a_id = ? OR m.user_b_id = ?) AND m.status != 'passed'
         AND (other.role != 'demo' OR ? = 1)
+        AND other.status = 'active' AND other.campus_verified = 1
+        AND (other.verified_until IS NULL OR other.verified_until > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
       ORDER BY CASE m.status WHEN 'mutual' THEN 0 WHEN 'waiting' THEN 1 ELSE 2 END, m.updated_at DESC
       LIMIT 1
     `)
@@ -317,12 +322,14 @@ async function ensureRealMatch(userId: string) {
     FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.id = ?
   `).bind(userId).first<RecordValue>();
   if (!viewer || String(viewer.role) === "demo" || String(viewer.status) !== "active"
-    || !asBool(viewer.campus_verified) || !asBool(viewer.questionnaire_completed) || !asBool(viewer.matching_enabled)) return;
+    || !validStudentCertification(viewer) || !asBool(viewer.questionnaire_completed) || !asBool(viewer.matching_enabled)) return;
 
   const active = await db.prepare(`
     SELECT m.id FROM matches m
     JOIN users other ON other.id = CASE WHEN m.user_a_id = ? THEN m.user_b_id ELSE m.user_a_id END
     WHERE (m.user_a_id = ? OR m.user_b_id = ?) AND m.status IN ('suggested', 'waiting', 'mutual') AND other.role != 'demo'
+      AND other.status = 'active' AND other.campus_verified = 1
+      AND (other.verified_until IS NULL OR other.verified_until > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     LIMIT 1
   `).bind(userId, userId, userId).first();
   if (active) return;
@@ -330,7 +337,7 @@ async function ensureRealMatch(userId: string) {
   const candidates = await db.prepare(`
     SELECT u.id, u.university, p.personality_type, p.interests_json, p.looking_for
     FROM users u JOIN profiles p ON p.user_id = u.id
-    WHERE u.id != ? AND u.role != 'demo' AND u.status = 'active' AND u.campus_verified = 1
+    WHERE u.id != ? AND u.role != 'demo' AND u.status = 'active' AND u.campus_verified = 1 AND (u.verified_until IS NULL OR u.verified_until > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
       AND u.questionnaire_completed = 1 AND u.matching_enabled = 1
       AND TRIM(COALESCE(p.gender, '')) != '' AND TRIM(COALESCE(p.grade, '')) != '' AND TRIM(COALESCE(p.major, '')) != '' AND TRIM(COALESCE(p.bio, '')) != ''
       AND NOT EXISTS (
@@ -414,10 +421,10 @@ export async function saveQuestionnaireSection(userId: string, answers: Record<s
 export async function completeQuestionnaire(userId: string) {
   const db = getD1();
   const ready = await db.prepare(`
-    SELECT u.campus_verified, p.major, p.gender, p.grade, p.bio
+    SELECT u.campus_verified, u.verified_until, p.major, p.gender, p.grade, p.bio
     FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.id = ?
   `).bind(userId).first<RecordValue>();
-  if (!ready || !asBool(ready.campus_verified)) throw new Error("请先完成高校学生身份认证。");
+  if (!ready || !validStudentCertification(ready)) throw new Error("请先完成高校学生身份认证。");
   if (!ready.major || !ready.gender || !ready.grade || !ready.bio) throw new Error("请先完整填写个人资料。");
   const rows = await db.prepare("SELECT question_id, answer FROM questionnaire_answers WHERE user_id = ?").bind(userId).all<{ question_id: string; answer: number }>();
   const answered = new Set(rows.results.filter((row) => Number.isInteger(Number(row.answer)) && Number(row.answer) >= 1 && Number(row.answer) <= 5).map((row) => row.question_id));
@@ -466,27 +473,10 @@ export async function verifyCampusCode(userId: string, email: string, code: stri
   const timestamp = now();
   await db.batch([
     db.prepare("UPDATE verification_codes SET consumed_at = ? WHERE id = ?").bind(timestamp, record.id),
-    db.prepare("UPDATE users SET campus_email = ?, campus_verified = 1, university = ?, verification_method = 'campus_email', verification_status = 'approved', onboarding_step = MAX(onboarding_step, 1), updated_at = ? WHERE id = ?")
-      .bind(String(record.email), university.trim().slice(0, 80) || String(record.email).split("@")[1], timestamp, userId),
+    db.prepare("UPDATE users SET campus_email = ?, updated_at = ? WHERE id = ?")
+      .bind(String(record.email), timestamp, userId),
   ]);
-  return { verified: true };
-}
-
-export async function submitVerificationRequest(userId: string, method: string, university: string, identifier: string, note: string) {
-  const allowed = new Set(["chsi_code", "student_card"]);
-  if (!allowed.has(method)) throw new Error("请选择有效的认证方式。");
-  const school = university.trim().slice(0, 80);
-  const id = identifier.trim().slice(0, 120);
-  if (school.length < 2 || id.length < 4) throw new Error("请填写学校名称和有效认证信息。");
-  const db = getD1();
-  const timestamp = now();
-  const result = await db.prepare(`
-    INSERT INTO verification_requests (user_id, method, university, identifier, note, status, created_at)
-    VALUES (?, ?, ?, ?, ?, 'pending', ?)
-  `).bind(userId, method, school, id, note.trim().slice(0, 300), timestamp).run();
-  await db.prepare("UPDATE users SET university = ?, verification_method = ?, verification_status = 'pending', campus_verified = 0, updated_at = ? WHERE id = ?")
-    .bind(school, method, timestamp, userId).run();
-  return { id: Number(result.meta.last_row_id), status: "pending" };
+  return { emailVerified: true, verified: false, university, message: "邮箱已绑定；还需提交学籍或学生证材料，核验当前在读状态。" };
 }
 
 export async function savePersonalityResult(userId: string, type: string, scores: Record<string, number>, traits: Record<string, number> = {}) {
@@ -511,13 +501,16 @@ export async function setMatching(userId: string, enabled: boolean) {
 export async function confirmMatchIntent(userId: string, matchId: number, intent: "interested" | "pass") {
   await assertParticipationReady(userId);
   const db = getD1();
-  const user = await db.prepare("SELECT campus_verified, questionnaire_completed, matching_enabled FROM users WHERE id = ?")
+  const user = await db.prepare("SELECT campus_verified, verified_until, questionnaire_completed, matching_enabled FROM users WHERE id = ?")
     .bind(userId).first<RecordValue>();
-  if (!user || !asBool(user.campus_verified) || !asBool(user.questionnaire_completed)) throw new Error("完成高校认证和相处偏好后才能使用匹配。");
+  if (!user || !validStudentCertification(user) || !asBool(user.questionnaire_completed)) throw new Error("完成高校认证和相处偏好后才能使用匹配。");
   if (!asBool(user.matching_enabled)) throw new Error("请先开启匹配推荐。");
   const match = await db.prepare("SELECT * FROM matches WHERE id = ? AND (user_a_id = ? OR user_b_id = ?)")
     .bind(matchId, userId, userId).first<RecordValue>();
   if (!match) throw new Error("没有找到这条匹配。");
+  const recipientId = String(match.user_a_id) === userId ? String(match.user_b_id) : String(match.user_a_id);
+  const recipient = await db.prepare("SELECT status, campus_verified, verified_until FROM users WHERE id = ?").bind(recipientId).first<RecordValue>();
+  if (!recipient || recipient.status !== "active" || !validStudentCertification(recipient)) throw new Error("对方当前的在读认证已失效，暂时无法继续这次匹配。");
   if (String(match.status) === "passed") throw new Error("这条匹配已经结束。");
   if (String(match.status) === "mutual" && intent === "pass") throw new Error("已解锁的私信不能通过匹配卡片略过，请使用举报或停止联系。");
   const timestamp = now();
@@ -546,7 +539,7 @@ export async function addMessage(userId: string, matchId: number, body: string) 
     WHERE m.id = ? AND (m.user_a_id = ? OR m.user_b_id = ?)
       AND (SELECT COUNT(*) FROM match_intents mi WHERE mi.match_id = m.id AND mi.intent = 'interested') = 2
       AND sender.status = 'active' AND recipient.status = 'active'
-      AND sender.campus_verified = 1 AND recipient.campus_verified = 1
+      AND sender.campus_verified = 1 AND recipient.campus_verified = 1 AND (sender.verified_until IS NULL OR sender.verified_until > strftime('%Y-%m-%dT%H:%M:%fZ','now')) AND (recipient.verified_until IS NULL OR recipient.verified_until > strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   `)
     .bind(userId, userId, matchId, userId, userId).first();
   if (!match) throw new Error("双方互相选择后才能发送私信。");
@@ -748,6 +741,7 @@ export async function getAdminSnapshot(userId: string) {
   const db = getD1();
   const actor = await getUser(userId);
   if (actor?.role !== "admin") throw new Error("仅管理员可以访问。");
+  await purgeVerificationEvidence();
   const [counts, users, verificationRows, reportRows, logs] = await Promise.all([
     db.prepare(`SELECT
       (SELECT COUNT(*) FROM users WHERE role != 'demo') AS users,
@@ -757,10 +751,10 @@ export async function getAdminSnapshot(userId: string) {
       (SELECT COUNT(*) FROM reports WHERE status = 'pending') AS pending_reports,
       (SELECT COUNT(*) FROM verification_requests WHERE status = 'pending') AS pending_verifications
     `).first<RecordValue>(),
-    db.prepare(`SELECT u.id, u.display_name, u.campus_email, u.campus_verified, u.university, u.verification_method, u.verification_status, u.questionnaire_completed, u.matching_enabled, u.status,
+    db.prepare(`SELECT u.id, u.display_name, u.campus_email, CASE WHEN u.verified_until IS NULL OR u.verified_until > strftime('%Y-%m-%dT%H:%M:%fZ','now') THEN u.campus_verified ELSE 0 END AS campus_verified, u.verified_until, u.university, u.verification_method, u.verification_status, u.questionnaire_completed, u.matching_enabled, u.status,
       p.major, p.grade, p.review_status, u.created_at
       FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.role != 'demo' ORDER BY u.created_at DESC LIMIT 100`).all<RecordValue>(),
-    db.prepare(`SELECT vr.*, u.display_name
+    db.prepare(`SELECT vr.id, vr.user_id, vr.method, vr.university, vr.identifier, vr.note, vr.status, vr.created_at, vr.evidence_version, vr.evidence_expires_at, vr.review_note, u.display_name
       FROM verification_requests vr JOIN users u ON u.id = vr.user_id
       ORDER BY CASE vr.status WHEN 'pending' THEN 0 ELSE 1 END, vr.created_at DESC LIMIT 100`).all<RecordValue>(),
     db.prepare(`SELECT r.*, reporter.display_name AS reporter_name, target.display_name AS target_name
@@ -770,24 +764,6 @@ export async function getAdminSnapshot(userId: string) {
   ]);
   // Native SQLite rows have a null prototype; client props must be plain objects.
   return { counts: { ...counts }, users: users.results.map((row) => ({ ...row })), verifications: verificationRows.results.map((row) => ({ ...row })), reports: reportRows.results.map((row) => ({ ...row })), logs: logs.results.map((row) => ({ ...row })) };
-}
-
-export async function reviewVerification(actorId: string, requestId: number, status: "approved" | "rejected") {
-  const actor = await getUser(actorId);
-  if (actor?.role !== "admin") throw new Error("仅管理员可以操作。");
-  const db = getD1();
-  const request = await db.prepare("SELECT * FROM verification_requests WHERE id = ?").bind(requestId).first<RecordValue>();
-  if (!request) throw new Error("认证申请不存在。");
-  const timestamp = now();
-  await db.batch([
-    db.prepare("UPDATE verification_requests SET status = ?, reviewed_at = ?, reviewer_id = ? WHERE id = ?")
-      .bind(status, timestamp, actorId, requestId),
-    db.prepare("UPDATE users SET campus_verified = ?, university = ?, verification_method = ?, verification_status = ?, onboarding_step = CASE WHEN ? = 1 THEN MAX(onboarding_step, 1) ELSE onboarding_step END, updated_at = ? WHERE id = ?")
-      .bind(status === "approved" ? 1 : 0, String(request.university), String(request.method), status, status === "approved" ? 1 : 0, timestamp, String(request.user_id)),
-    db.prepare("INSERT INTO audit_logs (actor_user_id, action, target_type, target_id, detail, created_at) VALUES (?, 'review_verification', 'verification', ?, ?, ?)")
-      .bind(actorId, String(requestId), JSON.stringify({ status, method: request.method }), timestamp),
-  ]);
-  return { id: requestId, userId: String(request.user_id), status };
 }
 
 export async function resolveReport(actorId: string, reportId: number, status: "resolved" | "dismissed", note: string) {

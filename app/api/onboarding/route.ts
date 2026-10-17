@@ -1,4 +1,4 @@
-import { createVerificationCode, completeQuestionnaire, saveProfile, saveQuestionnaireSection, submitVerificationRequest, verifyCampusCode } from "@/db/repository";
+import { createVerificationCode, completeQuestionnaire, saveProfile, saveQuestionnaireSection, verifyCampusCode } from "@/db/repository";
 import { fail, ok } from "@/lib/api";
 import { requireApiUser } from "@/lib/session";
 
@@ -12,7 +12,7 @@ export async function POST(request: Request) {
       case "verify_code":
         return ok(await verifyCampusCode(user.id, String(body.email ?? ""), String(body.code ?? ""), String(body.university ?? "")));
       case "submit_verification":
-        return ok(await submitVerificationRequest(user.id, String(body.method ?? ""), String(body.university ?? ""), String(body.identifier ?? ""), String(body.note ?? "")));
+        return fail(new Error("文字认证入口已关闭，请刷新页面，使用新的高校认证材料表单。"));
       case "save_profile":
         return ok(await saveProfile(user.id, (body.profile ?? {}) as Record<string, unknown>));
       case "save_section":
