@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
@@ -148,6 +148,60 @@ try {
   assert((await request("/onboarding", tokens.a)).payload.includes("管理后台"), "所有者在认证页面也能进入后台");
   const rejectedGender = await action("/api/onboarding", tokens.a, { action: "save_profile", profile: { nickname: "测试甲", gender: "其他" } });
   assert(!rejectedGender.response.ok && rejectedGender.payload.error.includes("男生或女生") && db.prepare("SELECT gender FROM profiles WHERE user_id = 'user-a'").get().gender === "女", "后端拒绝其他性别值且不会修改原资料");
+
+  const userCount = Number(db.prepare("SELECT COUNT(*) AS count FROM users").get().count);
+  assert((await request("/api/community", "")).response.status === 403, "未完成测评不能直接读取社区接口");
+  assert((await request("/community", "")).payload.includes("带着自己的频率"), "未测评的游客看到测评入口");
+  for (const body of [{ answers: Array(31).fill(-2) }, { answers: [...Array(31).fill(-2), 0.5] }, { type: "INFP" }]) {
+    assert((await action("/api/community/access", "", body)).response.status === 400, "不完整或无效测评不能领取浏览凭证");
+  }
+  const access = await action("/api/community/access", "", { answers: Array(32).fill(-2) });
+  const guestCookie = access.response.headers.get("set-cookie")?.split(";")[0];
+  assert(access.response.ok && access.payload.data.personalityType === "ISTJ" && Boolean(guestCookie), "完成 32 题可领取正确人格的游客浏览凭证");
+  assert(/httponly/i.test(access.response.headers.get("set-cookie")) && /samesite=lax/i.test(access.response.headers.get("set-cookie")), "游客凭证使用 HttpOnly 与 SameSite Cookie");
+  const guest = (pathname, options = {}) => request(pathname, "", { ...options, headers: { cookie: guestCookie, ...options.headers } });
+  const guestPage = await guest("/community");
+  assert(guestPage.response.ok && guestPage.payload.includes("小同") && guestPage.payload.includes("小频") && guestPage.payload.includes("官方虚拟伙伴"), "游客可免登录进入社区并看到明确标识的虚拟伙伴");
+  assert(Number(db.prepare("SELECT COUNT(*) AS count FROM users").get().count) === userCount, "浏览和虚拟伙伴不会创建冒充真人的账号");
+  assert((await request("/api/community", "", { headers: { cookie: `${guestCookie}tampered` } })).response.status === 403, "篡改浏览凭证会被拒绝");
+  const expired = Buffer.from(JSON.stringify({ type: "ISTJ", expires: Date.now() - 1000 })).toString("base64url");
+  const expiredSignature = createHmac("sha256", "test-only-secret-that-is-long-enough-2026").update(`community-v1:${expired}`).digest("base64url");
+  assert((await request("/api/community", "", { headers: { cookie: `tongpin_community=${expired}.${expiredSignature}` } })).response.status === 403, "已过期的浏览凭证会被拒绝");
+  const freshCookie = loggedIn.response.headers.get("set-cookie").split(";")[0];
+  for (const pathname of ["/api/plaza", "/api/matches", "/api/messages", "/api/settings", "/api/reports"]) {
+    const options = { method: "POST", body: JSON.stringify({ action: "create_post", content: "不能绕过准备流程", body: "不能绕过准备流程", postId: -1002, matchId: 1, intent: "interested", targetUserId: "user-a", category: "测试", detail: "不能绕过准备流程" }) };
+    assert((await guest(pathname, options)).response.status === 401, `${pathname} 拒绝未登录游客直接互动`);
+    assert((await request(pathname, "", { ...options, headers: { cookie: freshCookie } })).response.status === 403, `${pathname} 拒绝尚未完成准备的账号直接互动`);
+  }
+  assert((await request("/api/plaza", "", { headers: { cookie: freshCookie } })).response.status === 403, "不完整账号不能读取认证用户广场");
+  assert((await request("/api/messages?matchId=1", "", { headers: { cookie: freshCookie } })).response.status === 403, "不完整账号不能读取私信");
+  db.prepare("UPDATE profiles SET major = '  ' WHERE user_id = 'user-b'").run();
+  assert((await action("/api/plaza", tokens.b, { action: "toggle_like", postId: -1002 })).response.status === 403, "仅有完成标记但资料缺失的账号也不能互动");
+  db.prepare("UPDATE profiles SET major = '新闻' WHERE user_id = 'user-b'").run();
+  db.prepare("DELETE FROM questionnaire_answers WHERE user_id = 'user-b' AND question_id = 'life-01'").run();
+  assert((await action("/api/settings", tokens.b, { matchingEnabled: true })).response.status === 403, "缺少必答题时不能绕过问卷开启匹配");
+  db.prepare("INSERT INTO questionnaire_answers (user_id, question_id, dimension, answer, updated_at) VALUES ('user-b', 'life-01', 'life', 4, ?)").run(new Date().toISOString());
+  assert(!(await action("/api/onboarding", tokens.a, { action: "save_section", dimension: "life", answers: { "life-01": 2.5 } })).response.ok, "问卷拒绝非整数答案");
+  const limitedNational = await action("/api/plaza", tokens.a, { action: "create_post", category: "校园瞬间", audience: "national", content: "游客不能看到的全国认证动态" });
+  const limitedSchool = await action("/api/plaza", tokens.a, { action: "create_post", category: "校园瞬间", audience: "same_university", content: "游客不能看到的同校动态" });
+  const explicitPublic = await action("/api/plaza", tokens.a, { action: "create_post", category: "校园瞬间", audience: "public", content: "主动公开给完成测评游客的动态" });
+  assert(limitedNational.response.ok && limitedSchool.response.ok && explicitPublic.response.ok, "认证用户可以明确选择三种动态可见范围");
+  await action("/api/plaza", tokens.a, { action: "add_comment", postId: limitedNational.payload.data.id, body: "私有动态下的评论不能泄露" });
+  await action("/api/plaza", tokens.b, { action: "add_comment", postId: explicitPublic.payload.data.id, body: "主动公开的评论" });
+  const publicSnapshot = await guest("/api/community");
+  const publicText = JSON.stringify(publicSnapshot.payload);
+  assert(publicSnapshot.payload.data.posts.some((post) => post.id === explicitPublic.payload.data.id) && publicText.includes("主动公开的评论"), "游客可看到主动公开的动态和评论");
+  assert(!publicText.includes("游客不能看到") && !publicText.includes("私有动态下") && !publicText.includes("@example") && !publicText.includes("campus_email"), "游客响应不泄露全国、同校动态、私有评论或邮箱");
+  db.prepare("UPDATE users SET status = 'suspended' WHERE id = 'user-a'").run();
+  assert(!(await guest("/api/community")).payload.data.posts.some((post) => post.id === explicitPublic.payload.data.id), "被停用作者的公开动态不会继续展示");
+  db.prepare("UPDATE users SET status = 'active' WHERE id = 'user-a'").run();
+  assert((await action("/api/plaza", tokens.a, { action: "toggle_like", postId: -1002 })).response.ok, "认证用户可给官方话题点赞");
+  assert((await action("/api/plaza", tokens.a, { action: "add_comment", postId: -1002, body: "真实同学参与官方话题" })).response.ok, "认证用户可参与官方话题");
+  const officialPost = (await guest("/api/community")).payload.data.posts.find((post) => post.id === -1002);
+  assert(officialPost.likeCount === 1 && officialPost.commentCount === 1 && officialPost.comments.some((item) => item.official) && officialPost.comments.some((item) => item.body === "真实同学参与官方话题"), "官方话题保存真实互动计数并明确标记预设引导");
+  assert(!(await action("/api/plaza", tokens.a, { action: "add_comment", postId: -99999, body: "不存在的话题" })).response.ok, "未知官方话题 ID 无法写入评论");
+  assert(Number(db.prepare("SELECT COUNT(*) AS count FROM users").get().count) === userCount, "虚拟伙伴始终不进入真人账号与匹配池");
+
   const image = new Uint8Array(await sharp({ create: { width: 32, height: 32, channels: 3, background: "#4b37e8" } }).png().toBuffer());
   async function uploadAvatar() {
     const form = new FormData();

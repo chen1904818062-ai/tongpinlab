@@ -3,6 +3,7 @@
 @import "../vendor/shadcn-tailwind-4.13.0.css";
 @import "./premium.css";
 @import "./refined.css";
+@import "./community.css";
 
 @utility scrollbar-thin {
   scrollbar-width: thin;

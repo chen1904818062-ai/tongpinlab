@@ -2,6 +2,9 @@ import type { AuthIdentity } from "@/lib/auth";
 import { getD1 } from "@/db";
 import { deliverCampusCode } from "@/lib/campus-email";
 import { isAdminEmail } from "@/lib/admin";
+import { assertParticipationReady } from "@/lib/participation";
+import { getOfficialTopic } from "@/lib/companions";
+import { getOfficialPlazaPosts } from "@/db/community";
 import { allQuestions, demoCandidate, questionSections } from "@/lib/product-data";
 
 type RecordValue = Record<string, unknown>;
@@ -179,6 +182,7 @@ function normalizeProfile(profile: RecordValue | null) {
 }
 
 export async function getProductSnapshot(userId: string) {
+  await assertParticipationReady(userId);
   const db = getD1();
   const [user, profile] = await Promise.all([
     db.prepare("SELECT * FROM users WHERE id = ?").bind(userId).first<RecordValue>(),
@@ -328,6 +332,7 @@ async function ensureRealMatch(userId: string) {
     FROM users u JOIN profiles p ON p.user_id = u.id
     WHERE u.id != ? AND u.role != 'demo' AND u.status = 'active' AND u.campus_verified = 1
       AND u.questionnaire_completed = 1 AND u.matching_enabled = 1
+      AND TRIM(COALESCE(p.gender, '')) != '' AND TRIM(COALESCE(p.grade, '')) != '' AND TRIM(COALESCE(p.major, '')) != '' AND TRIM(COALESCE(p.bio, '')) != ''
       AND NOT EXISTS (
         SELECT 1 FROM matches existing
         JOIN users partner ON partner.id = CASE WHEN existing.user_a_id = u.id THEN existing.user_b_id ELSE existing.user_a_id END
@@ -363,6 +368,7 @@ export async function saveProfile(userId: string, input: RecordValue) {
   if (nickname.length < 2) throw new Error("昵称至少需要 2 个字。 ");
   const gender = String(input.gender ?? "");
   if (gender !== "男生" && gender !== "女生") throw new Error("请选择男生或女生。");
+  if (![input.grade, input.major, input.bio].every((value) => String(value ?? "").trim())) throw new Error("请完整填写年级、专业和自我介绍。");
   const interests = Array.isArray(input.interests)
     ? input.interests.map(String).filter(Boolean).slice(0, 8)
     : String(input.interests ?? "").split(/[，,]/).map((item) => item.trim()).filter(Boolean).slice(0, 8);
@@ -390,7 +396,7 @@ export async function updateProfilePhoto(userId: string, photoUrl: string) {
 
 export async function saveQuestionnaireSection(userId: string, answers: Record<string, number>, dimension: string) {
   const allowed = new Map(allQuestions.filter((item) => item.dimension === dimension).map((item) => [item.id, item]));
-  const entries = Object.entries(answers).filter(([id, value]) => allowed.has(id) && Number(value) >= 1 && Number(value) <= 5);
+  const entries = Object.entries(answers).filter(([id, value]) => allowed.has(id) && Number.isInteger(Number(value)) && Number(value) >= 1 && Number(value) <= 5);
   if (!entries.length) throw new Error("这一页还没有有效答案。");
   const db = getD1();
   const timestamp = now();
@@ -413,8 +419,8 @@ export async function completeQuestionnaire(userId: string) {
   `).bind(userId).first<RecordValue>();
   if (!ready || !asBool(ready.campus_verified)) throw new Error("请先完成高校学生身份认证。");
   if (!ready.major || !ready.gender || !ready.grade || !ready.bio) throw new Error("请先完整填写个人资料。");
-  const rows = await db.prepare("SELECT question_id FROM questionnaire_answers WHERE user_id = ?").bind(userId).all<{ question_id: string }>();
-  const answered = new Set(rows.results.map((row) => row.question_id));
+  const rows = await db.prepare("SELECT question_id, answer FROM questionnaire_answers WHERE user_id = ?").bind(userId).all<{ question_id: string; answer: number }>();
+  const answered = new Set(rows.results.filter((row) => Number.isInteger(Number(row.answer)) && Number(row.answer) >= 1 && Number(row.answer) <= 5).map((row) => row.question_id));
   const count = allQuestions.filter((question) => answered.has(question.id)).length;
   if (count < allQuestions.length) throw new Error(`还有 ${allQuestions.length - count} 题未完成。`);
   await db.prepare("UPDATE users SET questionnaire_completed = 1, onboarding_step = 8, updated_at = ? WHERE id = ?")
@@ -496,12 +502,14 @@ export async function savePersonalityResult(userId: string, type: string, scores
 }
 
 export async function setMatching(userId: string, enabled: boolean) {
+  await assertParticipationReady(userId);
   await getD1().prepare("UPDATE users SET matching_enabled = ?, updated_at = ? WHERE id = ?")
     .bind(enabled ? 1 : 0, now(), userId).run();
   return { enabled };
 }
 
 export async function confirmMatchIntent(userId: string, matchId: number, intent: "interested" | "pass") {
+  await assertParticipationReady(userId);
   const db = getD1();
   const user = await db.prepare("SELECT campus_verified, questionnaire_completed, matching_enabled FROM users WHERE id = ?")
     .bind(userId).first<RecordValue>();
@@ -527,6 +535,7 @@ export async function confirmMatchIntent(userId: string, matchId: number, intent
 }
 
 export async function addMessage(userId: string, matchId: number, body: string) {
+  await assertParticipationReady(userId);
   const db = getD1();
   const text = body.trim().slice(0, 500);
   if (!text) throw new Error("消息不能为空。");
@@ -548,6 +557,7 @@ export async function addMessage(userId: string, matchId: number, body: string) 
 }
 
 export async function getConversationUpdates(userId: string, matchId: number, afterId = 0) {
+  await assertParticipationReady(userId);
   const db = getD1();
   const match = await db.prepare(`
     SELECT m.* FROM matches m JOIN users viewer ON viewer.id = ?
@@ -584,11 +594,7 @@ export async function getConversationUpdates(userId: string, matchId: number, af
 }
 
 async function assertPlazaReady(userId: string) {
-  const user = await getD1().prepare("SELECT campus_verified, questionnaire_completed, status FROM users WHERE id = ?")
-    .bind(userId).first<RecordValue>();
-  if (!user || !asBool(user.campus_verified) || !asBool(user.questionnaire_completed) || String(user.status) !== "active") {
-    throw new Error("完成高校认证和相处偏好后才能参与广场互动。");
-  }
+  await assertParticipationReady(userId);
 }
 
 export async function getPlazaSnapshot(userId: string) {
@@ -602,14 +608,15 @@ export async function getPlazaSnapshot(userId: string) {
       SELECT pp.id, pp.author_id, pp.category, pp.audience, pp.content, pp.created_at,
         u.display_name, u.university, p.personality_type,
         (SELECT COUNT(*) FROM plaza_likes pl WHERE pl.post_id = pp.id) AS like_count,
-        (SELECT COUNT(*) FROM plaza_comments pc WHERE pc.post_id = pp.id AND pc.status = 'visible') AS comment_count,
+        (SELECT COUNT(*) FROM plaza_comments pc JOIN users cu ON cu.id = pc.author_id WHERE pc.post_id = pp.id AND pc.status = 'visible' AND cu.status = 'active') AS comment_count,
         EXISTS(SELECT 1 FROM plaza_likes mine WHERE mine.post_id = pp.id AND mine.user_id = ?) AS viewer_liked
       FROM plaza_posts pp
       JOIN users u ON u.id = pp.author_id
       LEFT JOIN profiles p ON p.user_id = pp.author_id
       WHERE pp.status = 'visible'
         AND (u.role != 'demo' OR ? = 1)
-        AND (pp.audience = 'national' OR u.university = (SELECT university FROM users WHERE id = ?))
+        AND u.status = 'active'
+        AND (pp.audience IN ('national', 'public') OR (pp.audience = 'same_university' AND u.university = (SELECT university FROM users WHERE id = ?)))
       ORDER BY pp.created_at DESC LIMIT 50
     `).bind(userId, allowDemo, userId).all<RecordValue>(),
     db.prepare(`
@@ -618,7 +625,7 @@ export async function getPlazaSnapshot(userId: string) {
       JOIN users u ON u.id = pc.author_id
       LEFT JOIN profiles p ON p.user_id = pc.author_id
       JOIN plaza_posts pp ON pp.id = pc.post_id
-      WHERE pc.status = 'visible' AND pp.status = 'visible'
+      WHERE pc.status = 'visible' AND pp.status = 'visible' AND u.status = 'active'
       ORDER BY pc.created_at ASC LIMIT 200
     `).all<RecordValue>(),
   ]);
@@ -627,9 +634,10 @@ export async function getPlazaSnapshot(userId: string) {
     const postId = Number(item.post_id);
     commentsByPost.set(postId, [...(commentsByPost.get(postId) ?? []), item]);
   }
+  const official = await getOfficialPlazaPosts(userId);
   return {
     viewer: { university: String(viewer?.university ?? ""), personalityType: String(viewer?.personality_type ?? "") },
-    posts: rows.results.map((item) => ({
+    posts: [official[0], ...rows.results.map((item) => ({
       id: Number(item.id),
       authorId: String(item.author_id),
       authorName: String(item.display_name),
@@ -650,7 +658,7 @@ export async function getPlazaSnapshot(userId: string) {
         body: String(comment.body),
         createdAt: String(comment.created_at),
       })),
-    })),
+    })), ...official.slice(1)],
   };
 }
 
@@ -658,7 +666,7 @@ export async function createPlazaPost(userId: string, category: string, audience
   await assertPlazaReady(userId);
   const allowedCategories = new Set(["校园瞬间", "寻找同伴", "情绪树洞", "观点交换"]);
   const safeCategory = allowedCategories.has(category) ? category : "校园瞬间";
-  const safeAudience = audience === "same_university" ? "same_university" : "national";
+  const safeAudience = audience === "public" ? "public" : audience === "same_university" ? "same_university" : "national";
   const text = content.trim().slice(0, 500);
   if (text.length < 5) throw new Error("至少写 5 个字，再发布这条动态。");
   const timestamp = now();
@@ -670,12 +678,15 @@ export async function createPlazaPost(userId: string, category: string, audience
 }
 
 async function assertVisiblePlazaPost(userId: string, postId: number) {
+  const topic = getOfficialTopic(postId);
+  if (topic) return { id: topic.id, author_id: `official-${topic.companion === 0 ? "xiaotong" : "xiaopin"}` };
   const post = await getD1().prepare(`
     SELECT pp.id, pp.author_id FROM plaza_posts pp
     JOIN users author ON author.id = pp.author_id
     JOIN users viewer ON viewer.id = ?
     WHERE pp.id = ? AND pp.status = 'visible'
-      AND (pp.audience = 'national' OR (pp.audience = 'same_university' AND author.university = viewer.university))
+      AND author.status = 'active'
+      AND (pp.audience IN ('national', 'public') OR (pp.audience = 'same_university' AND author.university = viewer.university))
   `).bind(userId, postId).first<RecordValue>();
   if (!post) throw new Error("这条动态不存在或你无权查看。");
   return post;

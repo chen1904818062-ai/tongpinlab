@@ -1,10 +1,10 @@
 import { createVerificationCode, completeQuestionnaire, saveProfile, saveQuestionnaireSection, submitVerificationRequest, verifyCampusCode } from "@/db/repository";
 import { fail, ok } from "@/lib/api";
-import { requireAppUser } from "@/lib/session";
+import { requireApiUser } from "@/lib/session";
 
 export async function POST(request: Request) {
   try {
-    const user = await requireAppUser("/onboarding");
+    const user = await requireApiUser();
     const body = await request.json() as Record<string, unknown>;
     switch (body.action) {
       case "send_code":

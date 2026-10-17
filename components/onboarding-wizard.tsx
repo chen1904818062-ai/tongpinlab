@@ -2,7 +2,7 @@
 
 import { BrandMark } from "@/components/brand-mark";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -13,9 +13,10 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
 import { allQuestions, questionSections, scaleLabels } from "@/lib/product-data";
+import { useOnboardingDraft } from "@/lib/use-onboarding-draft";
 
 type InitialData = {
-  user: { displayName: string; role: string; campusEmail: string | null; campusVerified: boolean; questionnaireCompleted: boolean; onboardingStep: number; university?: string | null; verificationMethod?: string | null; verificationStatus?: string } | null;
+  user: { id: string; displayName: string; role: string; campusEmail: string | null; campusVerified: boolean; questionnaireCompleted: boolean; onboardingStep: number; university?: string | null; verificationMethod?: string | null; verificationStatus?: string } | null;
   profile: { gender: string; grade: string; major: string; campus: string; hometown: string; height: number | null; smoking: string; lookingFor: string; bio: string; interests: string[]; photoUrl?: string | null } | null;
   answers: Record<string, number>;
 };
@@ -29,14 +30,14 @@ async function post<T>(payload: Record<string, unknown>) {
 
 function startingStep(data: InitialData) {
   const completeStep = questionSections.length + 2;
-  if (data.user?.questionnaireCompleted) return completeStep;
   if (!data.user?.campusVerified) return 0;
-  if (!data.profile?.major) return 1;
+  if (!data.profile?.major || !data.profile.gender || !data.profile.grade || !data.profile.bio) return 1;
+  if (data.user?.questionnaireCompleted && allQuestions.every((question) => data.answers[question.id])) return completeStep;
   const firstIncomplete = questionSections.findIndex((section) => section.questions.some((question) => !data.answers[question.id]));
   return firstIncomplete < 0 ? questionSections.length + 1 : firstIncomplete + 2;
 }
 
-export function OnboardingWizard({ initialData, signOutPath }: { initialData: InitialData; signOutPath: string }) {
+export function OnboardingWizard({ initialData, signOutPath, returnTo = "/community" }: { initialData: InitialData; signOutPath: string; returnTo?: string }) {
   const [step, setStep] = useState(() => startingStep(initialData));
   const [email, setEmail] = useState(initialData.user?.campusEmail || "");
   const [code, setCode] = useState("");
@@ -67,11 +68,33 @@ export function OnboardingWizard({ initialData, signOutPath }: { initialData: In
     photoUrl: initialData.profile?.photoUrl || "",
   });
   const answeredCount = allQuestions.filter((question) => Boolean(answers[question.id])).length;
+  const { ready: draftReady, markProfileSaved, markAnswersSaved } = useOnboardingDraft(initialData.user?.id || "", profile, setProfile, answers, setAnswers);
+  const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const savedAnswers = useRef({ ...initialData.answers });
+  const [saveStatus, setSaveStatus] = useState("");
+  const [saveRetry, setSaveRetry] = useState(0);
   const completeStep = questionSections.length + 2;
   const lastQuestionStep = questionSections.length + 1;
   const questionnaireProgress = allQuestions.length ? (answeredCount / allQuestions.length) * questionSections.length : 0;
   const progress = questionnaireCompleted ? 100 : Math.round((((campusVerified ? 1 : 0) + (profileReady ? 1 : 0) + questionnaireProgress) / (questionSections.length + 2)) * 100);
   const navItems = useMemo(() => ["校园认证", "基本资料", ...questionSections.map((item) => item.title), "完成"], []);
+
+  useEffect(() => {
+    const section = questionSections[step - 2];
+    if (!draftReady || busy || !section) return;
+    const changed = Object.fromEntries(section.questions.filter((question) => Number.isInteger(answers[question.id]) && answers[question.id] >= 1 && answers[question.id] <= 5 && savedAnswers.current[question.id] !== answers[question.id]).map((question) => [question.id, answers[question.id]]));
+    if (!Object.keys(changed).length) return;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      setSaveStatus("匹配问卷正在自动保存…");
+      saveQueue.current = saveQueue.current.catch(() => undefined).then(() => post({ action: "save_section", dimension: section.id, answers: changed })).then(() => {
+        savedAnswers.current = { ...savedAnswers.current, ...changed };
+        markAnswersSaved(changed);
+        if (active) setSaveStatus("匹配问卷已同步到账号，可以稍后继续。");
+      }).catch(() => { if (active) setSaveStatus("本次回答未同步，设备草稿已保留。"); });
+    }, 800);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [answers, step, busy, draftReady, markAnswersSaved, saveRetry]);
 
   useEffect(() => {
     if (email) return;
@@ -137,6 +160,7 @@ export function OnboardingWizard({ initialData, signOutPath }: { initialData: In
     setBusy(true);
     try {
       await post({ action: "save_profile", profile });
+      markProfileSaved(profile);
       setProfileReady(true);
       toast.success("基本资料已保存");
       if (questionnaireCompleted) {
@@ -162,7 +186,10 @@ export function OnboardingWizard({ initialData, signOutPath }: { initialData: In
     }
     setBusy(true);
     try {
+      await saveQueue.current.catch(() => undefined);
       await post({ action: "save_section", dimension: section.id, answers: sectionAnswers });
+      markAnswersSaved(sectionAnswers);
+      savedAnswers.current = { ...savedAnswers.current, ...sectionAnswers };
       if (questionnaireCompleted) {
         toast.success(`${section.title}已更新`);
         setStep(completeStep);
@@ -177,8 +204,8 @@ export function OnboardingWizard({ initialData, signOutPath }: { initialData: In
         }
         await post({ action: "complete" });
         setQuestionnaireCompleted(true);
-        toast.success("相处偏好已完成，正在进入校园社区");
-        window.location.replace("/match");
+        toast.success("准备已完成，正在回到刚才的页面");
+        window.location.replace(returnTo);
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "保存失败");
@@ -196,7 +223,7 @@ export function OnboardingWizard({ initialData, signOutPath }: { initialData: In
 
       <div className="mx-auto grid max-w-7xl gap-7 px-4 py-6 sm:px-6 lg:grid-cols-[260px_minmax(0,1fr)] lg:py-10">
         <aside className="h-fit rounded-[24px] bg-[#202b2b] p-5 text-white lg:sticky lg:top-6">
-          <div className="mb-6"><p className="text-xs uppercase tracking-[.18em] text-white/55">高校认证与匹配偏好</p><h1 className="mt-2 text-xl font-semibold">准备进入校园社区</h1><p className="mt-2 text-sm leading-6 text-white/65">认证与资料约 2 分钟，20 题匹配问卷约 3–5 分钟。所有已解锁步骤都可以返回修改。</p></div>
+          <div className="mb-6"><p className="text-xs uppercase tracking-[.18em] text-white/55">高校认证与匹配偏好</p><h1 className="mt-2 text-xl font-semibold">准备加入对话与匹配</h1><p className="mt-2 text-sm leading-6 text-white/65">可以分次完成。资料草稿保存在当前设备，匹配问卷自动同步到账号。完成后会回到刚才的话题。</p><Link href="/community" className="mt-4 inline-flex text-xs text-white/85 underline underline-offset-4">先继续浏览社区</Link></div>
           <Progress value={progress} className="mb-2 h-2 bg-white/10 [&>div]:bg-[#adc49c]" /><div className="mb-6 flex justify-between text-xs text-white/55"><span>{progress}%</span><span>{answeredCount} / {allQuestions.length} 题</span></div>
           <nav className="grid grid-cols-2 gap-1 lg:grid-cols-1">{navItems.map((item, index) => {
             const isCompleteStep = index === completeStep;
@@ -208,10 +235,11 @@ export function OnboardingWizard({ initialData, signOutPath }: { initialData: In
         </aside>
 
         <section className="min-w-0">
+          <div className="onboarding-save-note"><span>{saveStatus || "资料草稿会保存在当前设备；验证码不保存。"}</span>{saveStatus.includes("未同步") && <button type="button" onClick={() => setSaveRetry((value) => value + 1)}>重试保存</button>}{verificationStatus === "pending" && <button type="button" onClick={() => window.location.reload()}>刷新认证结果</button>}</div>
           {step === 0 && <EmailStep email={email} setEmail={setEmail} code={code} setCode={setCode} codeSent={codeSent} demoCode={demoCode} busy={busy} sendCode={sendCode} verifyCode={verifyCode} method={verificationMethod} setMethod={setVerificationMethod} university={university} setUniversity={setUniversity} identifier={verificationIdentifier} setIdentifier={setVerificationIdentifier} note={verificationNote} setNote={setVerificationNote} status={verificationStatus} submitManual={submitManualVerification} />}
           {step === 1 && <ProfileStep profile={profile} updateProfile={updateProfile} busy={busy} onSave={saveBasicProfile} />}
           {step >= 2 && step <= lastQuestionStep && <QuestionStep step={step} answers={answers} setAnswers={setAnswers} busy={busy} onSave={saveSection} onBack={() => setStep(step - 1)} />}
-          {step === completeStep && <CompleteStep onEdit={() => setStep(1)} onEditQuestionnaire={() => setStep(2)} />}
+          {step === completeStep && <CompleteStep returnTo={returnTo} onEdit={() => setStep(1)} onEditQuestionnaire={() => setStep(2)} />}
         </section>
       </div>
     </main>
@@ -304,8 +332,8 @@ function QuestionStep({ step, answers, setAnswers, busy, onSave, onBack }: { ste
   </CardShell>;
 }
 
-function CompleteStep({ onEdit, onEditQuestionnaire }: { onEdit: () => void; onEditQuestionnaire: () => void }) {
-  return <div className="overflow-hidden rounded-[24px] border border-[#e3e9e3] bg-white text-center shadow-[0_12px_36px_rgba(23,36,31,.05)]"><div className="bg-[#202b2b] px-6 py-12 text-white"><span className="mx-auto grid size-14 place-items-center rounded-full bg-white/10"><Sparkles className="size-7" /></span><Badge className="mt-6 bg-white/10 text-white">{allQuestions.length} / {allQuestions.length} 已完成</Badge><h2 className="mt-4 text-3xl font-semibold">可以进入全国高校社区了</h2><p className="mx-auto mt-3 max-w-xl leading-7 text-white/70">你的 MBTI 结果、资料和 5 组相处偏好会共同参与推荐。问卷已经保存，之后可以随时回来修改。</p></div><div className="p-7 sm:p-10"><div className="mx-auto grid max-w-2xl gap-3 sm:grid-cols-3"><CompleteItem icon={<BadgeCheck />} title="高校身份" text="已验证" /><CompleteItem icon={<Check />} title="基本资料" text="已保存" /><CompleteItem icon={<Heart />} title="匹配偏好" text="已生成" /></div><div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row"><Button asChild size="lg" className="bg-[#286451] hover:bg-[#205340]"><a href="/match" target="_top">进入匹配与广场 <ArrowRight className="ml-2 size-4" /></a></Button><Button type="button" size="lg" variant="outline" onClick={onEdit}>修改个人资料</Button><Button type="button" size="lg" variant="ghost" onClick={onEditQuestionnaire}>修改匹配偏好</Button></div></div></div>;
+function CompleteStep({ onEdit, onEditQuestionnaire, returnTo }: { onEdit: () => void; onEditQuestionnaire: () => void; returnTo: string }) {
+  return <div className="overflow-hidden rounded-[24px] border border-[#e3e9e3] bg-white text-center shadow-[0_12px_36px_rgba(23,36,31,.05)]"><div className="bg-[#202b2b] px-6 py-12 text-white"><span className="mx-auto grid size-14 place-items-center rounded-full bg-white/10"><Sparkles className="size-7" /></span><Badge className="mt-6 bg-white/10 text-white">{allQuestions.length} / {allQuestions.length} 已完成</Badge><h2 className="mt-4 text-3xl font-semibold">可以加入对话与匹配了</h2><p className="mx-auto mt-3 max-w-xl leading-7 text-white/70">你的 MBTI 结果、资料和 5 组相处偏好会共同参与推荐。问卷已经保存，之后可以随时回来修改。</p></div><div className="p-7 sm:p-10"><div className="mx-auto grid max-w-2xl gap-3 sm:grid-cols-3"><CompleteItem icon={<BadgeCheck />} title="高校身份" text="已验证" /><CompleteItem icon={<Check />} title="基本资料" text="已保存" /><CompleteItem icon={<Heart />} title="匹配偏好" text="已生成" /></div><div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row"><Button asChild size="lg" className="bg-[#286451] hover:bg-[#205340]"><a href={returnTo} target="_top">回到刚才的页面 <ArrowRight className="ml-2 size-4" /></a></Button><Button type="button" size="lg" variant="outline" onClick={onEdit}>修改个人资料</Button><Button type="button" size="lg" variant="ghost" onClick={onEditQuestionnaire}>修改匹配偏好</Button></div></div></div>;
 }
 
 function CompleteItem({ icon, title, text }: { icon: React.ReactNode; title: string; text: string }) {

@@ -1,10 +1,10 @@
 import { addPlazaComment, createPlazaPost, deletePlazaPost, getPlazaSnapshot, togglePlazaLike } from "@/db/repository";
 import { fail, ok } from "@/lib/api";
-import { requireAppUser } from "@/lib/session";
+import { requireApiUser } from "@/lib/session";
 
 export async function GET() {
   try {
-    const user = await requireAppUser("/match");
+    const user = await requireApiUser();
     return ok(await getPlazaSnapshot(user.id));
   } catch (error) {
     return fail(error);
@@ -13,7 +13,7 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
-    const user = await requireAppUser("/match");
+    const user = await requireApiUser();
     const body = await request.json() as Record<string, unknown>;
     switch (body.action) {
       case "create_post":

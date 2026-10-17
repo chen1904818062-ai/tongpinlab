@@ -17,7 +17,7 @@ export function PremiumHeader({ home = false, onHome }: { home?: boolean; onHome
           {home ? <>
             <a href="#experience" className="premium-nav-link">性格手记</a>
             <a href="#about" className="premium-nav-link">同频社区</a>
-            <Link href="/match" className="premium-nav-cta">进入社区 <ArrowUpRight size={13} /></Link>
+            <Link href="/community" className="premium-nav-cta">进入社区 <ArrowUpRight size={13} /></Link>
           </> : <Link href="/" onClick={onHome} className="premium-back"><ArrowLeft size={14} />返回首页</Link>}
         </nav>
       </div>

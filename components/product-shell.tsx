@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { CompanionGuide } from "@/components/companion-guide";
 import { SocialPlaza } from "@/components/social-plaza";
 
 type ProductData = {
@@ -41,6 +42,10 @@ async function get<T>(url: string) {
 export function ProductShell({ initialData, signOutPath }: { initialData: unknown; signOutPath: string }) {
   const [data, setData] = useState(initialData as ProductData);
   const [activeTab, setActiveTab] = useState("match");
+  useEffect(() => {
+    const tab = new URLSearchParams(location.search).get("tab");
+    if (tab && ["match", "plaza", "chat", "profile"].includes(tab)) queueMicrotask(() => setActiveTab(tab));
+  }, []);
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
@@ -203,6 +208,7 @@ export function ProductShell({ initialData, signOutPath }: { initialData: unknow
             <span><strong className="block text-[15px] tracking-wide">同频实验室</strong><small className="hidden text-[11px] text-slate-500 sm:block">全国高校人格与关系社区</small></span>
           </Link>
           <div className="flex items-center gap-2">
+            <Button asChild variant="ghost" size="sm"><Link href="/community">逛广场</Link></Button>
             {data.user?.role === "admin" && <Button asChild variant="ghost" size="sm"><a href="/admin" target="_top">管理后台</a></Button>}
             <Button asChild variant="ghost" size="icon" aria-label="退出登录"><a href={signOutPath} target="_top"><LogOut className="size-4" /></a></Button>
             <div className="grid size-9 place-items-center rounded-full bg-[#e8eef7] text-sm font-semibold text-[#0b1f3a]">{firstName.slice(0, 1)}</div>
@@ -276,7 +282,7 @@ export function ProductShell({ initialData, signOutPath }: { initialData: unknow
             ) : <EmptyState />}
           </TabsContent>
 
-          <TabsContent value="plaza" className="mt-0">
+          <TabsContent value="plaza" className="mt-0"><CompanionGuide personalityType={data.profile?.personalityType || ""} />
             <SocialPlaza currentUserId={data.user?.id || ""} />
           </TabsContent>
 
