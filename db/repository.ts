@@ -1,3 +1,4 @@
+import { createHmac, randomInt } from "node:crypto";
 import type { AuthIdentity } from "@/lib/auth";
 import { getD1 } from "@/db";
 import { deliverCampusCode } from "@/lib/campus-email";
@@ -224,6 +225,7 @@ export async function getProductSnapshot(userId: string) {
       id: otherId,
       name: String(other.display_name),
       university: String(other.university ?? "高校"),
+      verificationMethod: String(other.verification_method || ""),
       ...normalized,
       score: Number(match.score),
       reasons: parseJson<string[]>(match.shared_points_json, []),
@@ -435,48 +437,51 @@ export async function completeQuestionnaire(userId: string) {
   return { completed: true, count };
 }
 
-export async function createVerificationCode(userId: string, email: string) {
+function normalizedCampusEmail(email: string) {
   const normalized = email.trim().toLowerCase();
   const domain = normalized.split("@")[1] || "";
-  if (!/^[^@\s]+@[^@\s]+$/.test(normalized) || !/(\.edu\.cn|\.edu|\.ac\.cn)$/.test(domain)) {
-    throw new Error("请使用学校官方教育邮箱（如 .edu.cn / .edu）。");
-  }
-  const db = getD1();
-  const recent = await db.prepare("SELECT created_at FROM verification_codes WHERE user_id = ? ORDER BY created_at DESC LIMIT 1")
-    .bind(userId).first<{ created_at: string }>();
-  if (recent && Date.now() - new Date(recent.created_at).getTime() < 60_000) throw new Error("验证码发送较频繁，请 60 秒后重试。");
-  const duplicate = await db.prepare("SELECT id FROM users WHERE campus_email = ? AND id != ? LIMIT 1")
-    .bind(normalized, userId).first();
-  if (duplicate) throw new Error("该校园邮箱已绑定其他账号。");
-  const values = new Uint32Array(1);
-  crypto.getRandomValues(values);
-  const code = String(100000 + (values[0] % 900000));
-  const createdAt = now();
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-  await db.prepare("INSERT INTO verification_codes (user_id, email, code, expires_at, created_at) VALUES (?, ?, ?, ?, ?)")
-    .bind(userId, normalized, code, expiresAt, createdAt).run();
-  const delivery = await deliverCampusCode(normalized, code);
-  return { email: normalized, ...delivery, expiresAt };
+  if (!/^[^@\s]+@[^@\s]+$/.test(normalized) || !/(\.edu\.cn|\.edu|\.ac\.cn)$/.test(domain)) throw new Error("请使用学校官方教育邮箱（如 .edu.cn / .edu）。");
+  return normalized;
 }
-
-export async function verifyCampusCode(userId: string, email: string, code: string, university: string) {
-  const db = getD1();
-  const record = await db.prepare(`
-    SELECT * FROM verification_codes
-    WHERE user_id = ? AND email = ? AND code = ? AND consumed_at IS NULL
-    ORDER BY created_at DESC LIMIT 1
-  `).bind(userId, email.trim().toLowerCase(), code.trim()).first<RecordValue>();
-  if (!record || new Date(String(record.expires_at)).getTime() < Date.now()) throw new Error("验证码无效或已过期。");
-  const duplicate = await db.prepare("SELECT id FROM users WHERE campus_email = ? AND id != ? LIMIT 1")
-    .bind(String(record.email), userId).first();
+function campusCodeHash(userId: string, email: string, code: string) {
+  const secret = process.env.AUTH_CODE_SECRET || (process.env.NODE_ENV !== "production" ? "tongpin-development-only-secret" : "");
+  if (!secret) throw new Error("验证码服务尚未配置。");
+  return createHmac("sha256", secret).update("campus:" + userId + ":" + email + ":" + code).digest("hex");
+}
+export async function createVerificationCode(userId: string, email: string) {
+  const normalized = normalizedCampusEmail(email), channel = "campus:" + userId, db = getD1();
+  const recent = await db.prepare("SELECT created_at FROM login_codes WHERE channel = ? ORDER BY id DESC LIMIT 1").bind(channel).first<{created_at:string}>();
+  if (recent && Date.now() - new Date(recent.created_at).getTime() < 60_000) throw new Error("验证码发送较频繁，请 60 秒后重试。");
+  const duplicate = await db.prepare("SELECT id FROM users WHERE campus_email = ? AND id != ? LIMIT 1").bind(normalized,userId).first();
   if (duplicate) throw new Error("该校园邮箱已绑定其他账号。");
-  const timestamp = now();
+  const code = String(randomInt(100000,1000000)), createdAt = now(), expiresAt = new Date(Date.now()+10*60*1000).toISOString();
   await db.batch([
-    db.prepare("UPDATE verification_codes SET consumed_at = ? WHERE id = ?").bind(timestamp, record.id),
-    db.prepare("UPDATE users SET campus_email = ?, updated_at = ? WHERE id = ?")
-      .bind(String(record.email), timestamp, userId),
+    db.prepare("UPDATE login_codes SET consumed_at = ? WHERE channel = ? AND consumed_at IS NULL").bind(createdAt,channel),
+    db.prepare("INSERT INTO login_codes (destination,channel,code_hash,expires_at,created_at) VALUES (?,?,?,?,?)").bind(normalized,channel,campusCodeHash(userId,normalized,code),expiresAt,createdAt),
   ]);
-  return { emailVerified: true, verified: false, university, message: "邮箱已绑定；还需提交学籍或学生证材料，核验当前在读状态。" };
+  const delivery = await deliverCampusCode(normalized,code);
+  return {email:normalized,...delivery,expiresAt};
+}
+export async function verifyCampusCode(userId: string, email: string, code: string, university: string) {
+  const normalized = normalizedCampusEmail(email), school = university.trim(), db = getD1();
+  if (school.length < 2 || school.length > 80) throw new Error("请填写学校的完整名称。");
+  const record = await db.prepare("SELECT * FROM login_codes WHERE channel = ? AND destination = ? AND consumed_at IS NULL ORDER BY id DESC LIMIT 1").bind("campus:"+userId,normalized).first<RecordValue>();
+  if (!record || new Date(String(record.expires_at)).getTime() < Date.now()) throw new Error("验证码无效或已过期。");
+  if (Number(record.attempts) >= 5) throw new Error("验证码尝试次数过多，请重新获取。");
+  if (!/^\d{6}$/.test(code.trim()) || campusCodeHash(userId,normalized,code.trim()) !== record.code_hash) {
+    await db.prepare("UPDATE login_codes SET attempts = attempts+1 WHERE id = ? AND consumed_at IS NULL AND attempts < 5").bind(record.id).run();
+    throw new Error("验证码错误，请重新输入。");
+  }
+  const duplicate = await db.prepare("SELECT id FROM users WHERE campus_email = ? AND id != ? LIMIT 1").bind(normalized,userId).first();
+  if (duplicate) throw new Error("该校园邮箱已绑定其他账号。");
+  const timestamp = now(), verifiedUntil = new Date(Date.now()+180*86400_000).toISOString();
+  const result = await db.batch([
+    db.prepare("UPDATE login_codes SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL AND attempts < 5 AND expires_at > ?").bind(timestamp,record.id,timestamp),
+    db.prepare("UPDATE users SET campus_email = ?, university = ?, campus_verified = 1, verification_method = 'campus_email', verification_status = 'approved', verified_until = ?, onboarding_step = MAX(onboarding_step,1), updated_at = ? WHERE id = ? AND EXISTS (SELECT 1 FROM login_codes WHERE id = ? AND consumed_at = ?)").bind(normalized,school,verifiedUntil,timestamp,userId,record.id,timestamp),
+    db.prepare("UPDATE verification_requests SET status = 'withdrawn', encrypted_evidence = NULL, review_note = '已改用校园邮箱认证' WHERE user_id = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM login_codes WHERE id = ? AND consumed_at = ?)").bind(userId,record.id,timestamp),
+  ]);
+  if (!result[0].meta.changes) throw new Error("验证码已使用或已过期，请重新获取。");
+  return {emailVerified:true,verified:true,university:school,method:"campus_email",verifiedUntil};
 }
 
 export async function savePersonalityResult(userId: string, type: string, scores: Record<string, number>, traits: Record<string, number> = {}) {

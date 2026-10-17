@@ -11,7 +11,7 @@ export async function getCommunityViewer() {
   const storedType = status?.personalityType || "";
   return {
     canBrowse: Boolean(access || /^[EI][SN][TF][JP]$/.test(storedType)),
-    authenticated: Boolean(user), userId: user?.id || "", displayName: user?.displayName || "", role: user?.role || "",
+    authenticated: Boolean(user), userId: user?.id || "", displayName: user?.displayName || "", role: user?.role || "", verificationMethod: user?.verificationMethod || "",
     ready: Boolean(status?.ready), campusVerified: Boolean(status?.campusVerified), profileReady: Boolean(status?.profileReady), questionnaireCompleted: Boolean(status?.questionnaireCompleted),
     answeredCount: status?.answeredCount || 0, total: status?.total || 20, personalityType: access?.type || storedType,
   };

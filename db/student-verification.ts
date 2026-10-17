@@ -1,10 +1,10 @@
 import "server-only";
-import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from "node:crypto";
 import sharp from "sharp";
 import { getD1 } from "@/db";
 import { AccessError } from "@/lib/access-error";
 import { isAdminEmail } from "@/lib/admin";
-import { verificationChecks, type StudentVerificationMethod, type VerificationSummary } from "@/lib/student-verification";
+import type { StudentVerificationMethod, VerificationSummary } from "@/lib/student-verification";
 
 type Row = Record<string, unknown>;
 type Evidence = { name: string; studentNumber: string; code: string; challenge: string; enrollmentUntil: string; images: string[] };
@@ -26,19 +26,6 @@ function decrypt(value: string, userId: string): Evidence {
   cipher.setAAD(Buffer.from(userId)); cipher.setAuthTag(tag);
   return JSON.parse(Buffer.concat([cipher.update(bytes), cipher.final()]).toString("utf8"));
 }
-function challenge(userId: string, issued: number) {
-  return `同频 ${new Date(issued + 8 * 3600_000).toISOString().slice(0, 10)} ${hash(`${userId}:${issued}`).slice(0, 8).toUpperCase()}`;
-}
-export function createVerificationChallenge(userId: string) {
-  const issued = Date.now();
-  return { text: challenge(userId, issued), token: `${issued}.${hash(`challenge:${userId}:${issued}`)}` };
-}
-function verifyChallenge(userId: string, token: string) {
-  const [raw, signature, extra] = token.split("."), issued = Number(raw);
-  const expected = Buffer.from(hash(`challenge:${userId}:${issued}`)), actual = Buffer.from(signature || "");
-  if (extra || !Number.isSafeInteger(issued) || issued > Date.now() || Date.now() - issued > 86400_000 || actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw new Error("核验口令已过期，请刷新页面重新拍摄。");
-  return challenge(userId, issued);
-}
 async function requireAdmin(userId: string) {
   const user = await getD1().prepare("SELECT email, status FROM users WHERE id = ?").bind(userId).first<Row>();
   if (user?.status !== "active" || !isAdminEmail(String(user.email || ""))) throw new AccessError("仅管理员可查看或审核认证材料。", 403);
@@ -53,10 +40,10 @@ export async function purgeVerificationEvidence() {
 export async function getStudentVerificationState(userId: string) {
   await purgeVerificationEvidence();
   const latest = await getD1().prepare("SELECT id, method, status, university, review_note, created_at, evidence_expires_at FROM verification_requests WHERE user_id = ? ORDER BY id DESC LIMIT 1").bind(userId).first<VerificationSummary>();
-  return { latest: latest ? { ...latest } : null, challenge: createVerificationChallenge(userId) };
+  return { latest: latest ? { ...latest } : null };
 }
 async function encodeImage(file: FormDataEntryValue | null) {
-  if (!(file instanceof File) || !file.size || file.size > 3 * 1024 * 1024) throw new Error("请上传两张各不超过 3MB 的凭证照片。");
+  if (!(file instanceof File) || !file.size || file.size > 3 * 1024 * 1024) throw new Error("请上传一张不超过 3MB 的学生证照片。");
   if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) throw new Error("凭证照片仅支持 JPG、PNG、WebP。");
   const source = Buffer.from(await file.arrayBuffer());
   const image = sharp(source, { limitInputPixels: 16_000_000, animated: false });
@@ -69,35 +56,29 @@ async function encodeImage(file: FormDataEntryValue | null) {
 export async function submitStudentVerification(userId: string, form: FormData) {
   await purgeVerificationEvidence();
   const method = String(form.get("method")) as StudentVerificationMethod;
-  if (!Object.hasOwn(verificationChecks, method)) throw new Error("请选择学信网或学生证认证。");
+  if (!["chsi_code", "student_card"].includes(method)) throw new Error("请选择学信网或学生证认证。");
   const school = String(form.get("university") || "").trim().replace(/\s+/g, " ");
-  const name = String(form.get("name") || "").trim();
-  const studentNumber = String(form.get("studentNumber") || "").trim().toUpperCase();
   const code = String(form.get("identifier") || "").replace(/\s+/g, "").toUpperCase();
-  const enrollmentUntil = String(form.get("enrollmentUntil") || "");
-  const enrolled = new Date(`${enrollmentUntil}T23:59:59.999Z`).getTime();
-  if (school.length < 2 || school.length > 80 || name.length < 2 || name.length > 60 || !/^[A-Z0-9-]{4,40}$/.test(studentNumber)) throw new Error("请填写学校、凭证姓名和完整学号（4–40 位字母、数字或短横线）。");
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(enrollmentUntil) || !Number.isFinite(enrolled) || enrolled <= Date.now() || enrolled > Date.now() + 8 * 366 * 86400_000) throw new Error("请填写凭证上的有效预计毕业日期。");
+  if (school.length < 2 || school.length > 80) throw new Error("请填写学校的完整名称。");
   if (form.get("consent") !== "true") throw new Error("请先同意仅为本账号学生身份核验使用材料，并确认材料属于本人。");
   if (method === "chsi_code" && !/^(?:[A-Z0-9]{12}|[A-Z0-9]{16})$/.test(code)) throw new Error("请填写学籍在线验证报告的 12 或 16 位在线验证码；不是短信验证码。");
-  const challengeText = verifyChallenge(userId, String(form.get("challengeToken") || ""));
   const db = getD1();
   const pending = await db.prepare("SELECT id FROM verification_requests WHERE user_id = ? AND status = 'pending' LIMIT 1").bind(userId).first();
   if (pending) throw new Error("已有申请审核中，请等待结果或先撤回该申请。");
-  const identityKey = hash(`identity:${school.toLowerCase().replace(/\s/g, "")}:${studentNumber}`);
+  const images = method === "student_card" ? [await encodeImage(form.get("identityPhoto"))] : [];
+  const identityKey = method === "chsi_code" ? hash(`report:${code}`) : hash(`student-photo:${images[0]}`);
   const reportKey = method === "chsi_code" ? hash(`report:${code}`) : null;
   const duplicate = await db.prepare("SELECT id FROM verification_requests WHERE (identity_key = ? OR (? IS NOT NULL AND report_key = ?)) AND user_id != ? AND status IN ('pending', 'approved') LIMIT 1").bind(identityKey, reportKey, reportKey, userId).first();
   if (duplicate) throw new Error("该学生凭据已被其他账号提交，请联系管理员核实。");
-  const images = method === "student_card" ? [await encodeImage(form.get("identityPhoto")), await encodeImage(form.get("enrollmentPhoto"))] : [];
-  const evidence = encrypt({ name, studentNumber, code: method === "chsi_code" ? code : "", challenge: challengeText, enrollmentUntil, images }, userId);
+  const evidence = encrypt({ name: "", studentNumber: "", code: method === "chsi_code" ? code : "", challenge: "", enrollmentUntil: "", images }, userId);
   const timestamp = new Date().toISOString(), expires = new Date(Date.now() + 14 * 86400_000).toISOString();
   try {
     const result = await db.batch([
       db.prepare(`INSERT INTO verification_requests (user_id, method, university, identifier, note, status, created_at, evidence_version, encrypted_evidence, evidence_expires_at, identity_key, report_key, enrollment_until)
-        SELECT ?, ?, ?, ?, ?, 'pending', ?, 1, ?, ?, ?, ?, ?
+        SELECT ?, ?, ?, ?, ?, 'pending', ?, 2, ?, ?, ?, ?, NULL
         WHERE NOT EXISTS (SELECT 1 FROM verification_requests WHERE user_id = ? AND status = 'pending')
           AND NOT EXISTS (SELECT 1 FROM verification_requests WHERE user_id != ? AND status IN ('pending','approved') AND (identity_key = ? OR (? IS NOT NULL AND report_key = ?)))`)
-        .bind(userId, method, school, `尾号 ${studentNumber.slice(-4)}`, String(form.get("note") || "").trim().slice(0, 300), timestamp, evidence, expires, identityKey, reportKey, enrollmentUntil, userId, userId, identityKey, reportKey, reportKey),
+        .bind(userId, method, school, method === "chsi_code" ? "学籍报告验证码" : "学生证照片", String(form.get("note") || "").trim().slice(0, 300), timestamp, evidence, expires, identityKey, reportKey, userId, userId, identityKey, reportKey, reportKey),
       db.prepare("UPDATE users SET verification_status = 'pending', updated_at = ? WHERE id = ? AND EXISTS (SELECT 1 FROM verification_requests WHERE user_id = ? AND created_at = ? AND status = 'pending' AND identity_key = ?)").bind(timestamp, userId, userId, timestamp, identityKey),
     ]);
     if (!result[0].meta.changes) throw new Error("duplicate");
@@ -115,7 +96,7 @@ export async function withdrawStudentVerification(userId: string) {
 export async function getVerificationEvidence(actorId: string, requestId: number) {
   await requireAdmin(actorId); await purgeVerificationEvidence();
   const row = await getD1().prepare("SELECT * FROM verification_requests WHERE id = ?").bind(requestId).first<Row>();
-  if (!row || row.status !== "pending" || !row.encrypted_evidence || Number(row.evidence_version) !== 1) throw new Error("没有可查看的有效材料；旧版文字申请需退回补交。");
+  if (!row || row.status !== "pending" || !row.encrypted_evidence || ![1, 2].includes(Number(row.evidence_version))) throw new Error("没有可查看的有效材料；旧版文字申请需退回补交。");
   await getD1().prepare("INSERT INTO audit_logs (actor_user_id, action, target_type, target_id, detail, created_at) VALUES (?, 'view_verification_evidence', 'verification', ?, NULL, ?)").bind(actorId, String(requestId), new Date().toISOString()).run();
   return { ...decrypt(String(row.encrypted_evidence), String(row.user_id)), university: String(row.university), method: String(row.method), evidenceExpiresAt: String(row.evidence_expires_at) };
 }
@@ -124,30 +105,27 @@ export async function reviewStudentVerification(actorId: string, requestId: numb
   if (!["approved", "rejected"].includes(status)) throw new Error("审核结果无效。");
   const db = getD1(), row = await db.prepare("SELECT * FROM verification_requests WHERE id = ?").bind(requestId).first<Row>();
   if (!row || row.status !== "pending") throw new Error("申请已处理或不存在，请刷新列表。");
-  const checks = Array.isArray(input.checks) ? input.checks.filter(item => typeof item === "string") : [];
-  const reviewNote = String(input.note || "").trim().slice(0, 300);
-  if (reviewNote.length < 4) throw new Error("请填写至少 4 个字的核验结论或退回理由。");
+  const reviewNote = String(input.note || "").trim().slice(0, 300) || (status === "approved" ? "高校身份材料审核通过" : "");
+  if (status === "rejected" && reviewNote.length < 2) throw new Error("请填写退回理由，方便申请人修改。");
   let verifiedUntil: string | null = null;
   if (status === "approved") {
-    if (Number(row.evidence_version) !== 1 || !row.encrypted_evidence) throw new Error("旧版文字申请没有有效材料，请退回后重新提交。");
+    if (![1, 2].includes(Number(row.evidence_version)) || !row.encrypted_evidence) throw new Error("旧版文字申请没有有效材料，请退回后重新提交。");
     const viewed = await db.prepare("SELECT id FROM audit_logs WHERE actor_user_id = ? AND action = 'view_verification_evidence' AND target_id = ? AND created_at >= ? LIMIT 1").bind(actorId, String(requestId), row.created_at).first();
     if (!viewed) throw new Error("请先打开并查看该申请的原始材料。");
-    const required = verificationChecks[row.method as StudentVerificationMethod];
-    if (!required || required.some(item => !checks.includes(item.id))) throw new Error("请逐项完成核验清单后再通过。");
-    const validUntil = String(input.validUntil || "");
-    const until = new Date(`${validUntil}T23:59:59.999Z`).getTime();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(validUntil) || !Number.isFinite(until) || until <= Date.now() || until > Date.now() + 184 * 86400_000 || validUntil > String(row.enrollment_until)) throw new Error("认证有效期须晚于今天、不超过 6 个月，且不能超过预计毕业日期。");
+    const legacyUntil = row.enrollment_until ? new Date(`${row.enrollment_until}T23:59:59.999+08:00`).getTime() : Infinity;
+    const until = Math.min(Date.now() + 180 * 86400_000, legacyUntil);
+    if (!Number.isFinite(until) || until <= Date.now()) throw new Error("材料已过期，请退回后重新提交。");
     verifiedUntil = new Date(until).toISOString();
   }
   const timestamp = new Date().toISOString();
   const changed = await db.batch([
     db.prepare("UPDATE verification_requests SET status = ?, reviewed_at = ?, reviewer_id = ?, review_note = ?, reviewed_checks_json = ?, encrypted_evidence = NULL WHERE id = ? AND status = 'pending'")
-      .bind(status, timestamp, actorId, reviewNote, JSON.stringify(checks), requestId),
+      .bind(status, timestamp, actorId, reviewNote, "[]", requestId),
     db.prepare(`UPDATE users SET campus_verified = ?, verified_until = ?, university = ?, verification_method = ?, verification_status = ?, onboarding_step = CASE WHEN ? = 1 THEN MAX(onboarding_step, 1) ELSE onboarding_step END, updated_at = ?
       WHERE id = ? AND EXISTS (SELECT 1 FROM verification_requests WHERE id = ? AND reviewed_at = ? AND reviewer_id = ? AND status = ?)`)
       .bind(status === "approved" ? 1 : 0, verifiedUntil, row.university, row.method, status, status === "approved" ? 1 : 0, timestamp, row.user_id, requestId, timestamp, actorId, status),
     db.prepare("INSERT INTO audit_logs (actor_user_id, action, target_type, target_id, detail, created_at) SELECT ?, 'review_verification', 'verification', ?, ?, ? WHERE EXISTS (SELECT 1 FROM verification_requests WHERE id = ? AND reviewed_at = ? AND reviewer_id = ? AND status = ?)")
-      .bind(actorId, String(requestId), JSON.stringify({ status, checks, verifiedUntil }), timestamp, requestId, timestamp, actorId, status),
+      .bind(actorId, String(requestId), JSON.stringify({ status, verifiedUntil }), timestamp, requestId, timestamp, actorId, status),
   ]);
   if (!changed[0].meta.changes) throw new Error("申请已被处理，请刷新列表。");
   return { id: requestId, status, verifiedUntil };
