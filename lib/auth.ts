@@ -11,6 +11,7 @@ export type AuthIdentity = {
   displayName: string;
   email: string;
   fullName: string | null;
+  accountId?: string;
 };
 
 export const SESSION_COOKIE = "tongpin_session";
@@ -59,6 +60,7 @@ export async function getCurrentIdentity(): Promise<AuthIdentity | null> {
   `).bind(hashToken(token), new Date().toISOString()).first<Record<string, unknown>>();
   if (!session) return null;
   return {
+    accountId: String(session.user_id),
     userId: String(session.platform_user_id),
     displayName: String(session.display_name || session.email || "同学"),
     email: String(session.email || ""),

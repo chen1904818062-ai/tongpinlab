@@ -40,3 +40,7 @@ export function deliverCampusCode(email: string, code: string) {
 export function deliverLoginCode(email: string, code: string) {
   return deliverCode(email, code, "同频实验室登录验证码", "你的登录验证码是：");
 }
+
+export function deliverDeletionCode(email: string, code: string) {
+  return deliverCode(email, code, "同频实验室账号注销确认", "你正在申请注销同频实验室账号。注销后无法恢复，请仅在本人确认注销时输入此验证码：");
+}

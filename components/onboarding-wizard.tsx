@@ -166,7 +166,7 @@ export function OnboardingWizard({ initialData, signOutPath, returnTo = "/commun
       <header className="border-b border-[#e3e9e3] bg-[#f6f7f5]/95">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6">
           <Link href="/" target="_top" className="flex items-center gap-3"><BrandMark /><strong>同频实验室</strong></Link>
-          <div className="flex items-center gap-3">{initialData.user?.role === "admin" && <Button asChild variant="ghost" size="sm"><Link href="/admin">管理后台</Link></Button>}<div className="hidden items-center gap-2 text-sm text-slate-500 sm:flex"><LockKeyhole className="size-4" />答案仅用于匹配，不会公开展示</div><Button asChild variant="ghost" size="sm"><a href={signOutPath} target="_top"><LogOut className="mr-2 size-4" />退出</a></Button></div>
+          <div className="flex items-center gap-3"><Link href="/account" aria-label="账号与隐私" className="text-xs text-slate-600">账号</Link>{initialData.user?.role === "admin" && <Button asChild variant="ghost" size="sm"><Link href="/admin">管理后台</Link></Button>}<div className="hidden items-center gap-2 text-sm text-slate-500 sm:flex"><LockKeyhole className="size-4" />答案仅用于匹配，不会公开展示</div><Button asChild variant="ghost" size="sm"><a href={signOutPath} target="_top"><LogOut className="mr-2 size-4" />退出</a></Button></div>
         </div>
       </header>
 

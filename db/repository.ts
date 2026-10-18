@@ -9,6 +9,7 @@ import { getOfficialPlazaPosts } from "@/db/community";
 import { allQuestions, demoCandidate, questionSections } from "@/lib/product-data";
 import { validStudentCertification } from "@/lib/student-verification";
 import { purgeVerificationEvidence } from "@/db/student-verification";
+import { AccessError } from "@/lib/access-error";
 
 type RecordValue = Record<string, unknown>;
 
@@ -32,9 +33,10 @@ function asBool(value: unknown) {
 export async function ensureUser(identity: AuthIdentity) {
   const db = getD1();
   let user = await db
-    .prepare("SELECT * FROM users WHERE platform_user_id = ?")
-    .bind(identity.userId)
+    .prepare(identity.accountId ? "SELECT * FROM users WHERE id = ? AND status = 'active'" : "SELECT * FROM users WHERE platform_user_id = ?")
+    .bind(identity.accountId || identity.userId)
     .first<RecordValue>();
+  if (identity.accountId && !user) throw new AccessError("登录已失效，请重新登录。", 401);
 
   if (!user) {
     const userId = crypto.randomUUID();
@@ -50,13 +52,13 @@ export async function ensureUser(identity: AuthIdentity) {
     user = await db.prepare("SELECT * FROM users WHERE id = ?").bind(userId).first<RecordValue>();
   } else {
     await db
-      .prepare("UPDATE users SET email = ?, role = ?, display_name = CASE WHEN TRIM(display_name) = '' THEN ? ELSE display_name END, updated_at = ? WHERE id = ?")
+      .prepare("UPDATE users SET email = ?, role = ?, display_name = CASE WHEN TRIM(display_name) = '' THEN ? ELSE display_name END, updated_at = ? WHERE id = ? AND status = 'active'")
       .bind(identity.email, isAdminEmail(identity.email) ? "admin" : "student", identity.displayName, now(), user.id)
       .run();
-    user = { ...user, email: identity.email, role: isAdminEmail(identity.email) ? "admin" : "student" };
+    user = await db.prepare("SELECT * FROM users WHERE id = ? AND status = 'active'").bind(user.id).first<RecordValue>();
   }
 
-  if (!user) throw new Error("Unable to create user record.");
+  if (!user) throw new AccessError("登录已失效，请重新登录。", 401);
   if (process.env.DEMO_SEED_ENABLED === "true") await ensureDemoData(String(user.id));
   return normalizeUser(user);
 }
@@ -749,8 +751,8 @@ export async function getAdminSnapshot(userId: string) {
   await purgeVerificationEvidence();
   const [counts, users, verificationRows, reportRows, logs] = await Promise.all([
     db.prepare(`SELECT
-      (SELECT COUNT(*) FROM users WHERE role != 'demo') AS users,
-      (SELECT COUNT(*) FROM users WHERE questionnaire_completed = 1 AND role != 'demo') AS completed,
+      (SELECT COUNT(*) FROM users WHERE role != 'demo' AND status != 'deleted') AS users,
+      (SELECT COUNT(*) FROM users WHERE questionnaire_completed = 1 AND role != 'demo' AND status != 'deleted') AS completed,
       (SELECT COUNT(*) FROM matches) AS matches,
       (SELECT COUNT(*) FROM messages) AS messages,
       (SELECT COUNT(*) FROM reports WHERE status = 'pending') AS pending_reports,
@@ -758,7 +760,7 @@ export async function getAdminSnapshot(userId: string) {
     `).first<RecordValue>(),
     db.prepare(`SELECT u.id, u.display_name, u.campus_email, CASE WHEN u.verified_until IS NULL OR u.verified_until > strftime('%Y-%m-%dT%H:%M:%fZ','now') THEN u.campus_verified ELSE 0 END AS campus_verified, u.verified_until, u.university, u.verification_method, u.verification_status, u.questionnaire_completed, u.matching_enabled, u.status,
       p.major, p.grade, p.review_status, u.created_at
-      FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.role != 'demo' ORDER BY u.created_at DESC LIMIT 100`).all<RecordValue>(),
+      FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.role != 'demo' AND u.status != 'deleted' ORDER BY u.created_at DESC LIMIT 100`).all<RecordValue>(),
     db.prepare(`SELECT vr.id, vr.user_id, vr.method, vr.university, vr.identifier, vr.note, vr.status, vr.created_at, vr.evidence_version, vr.evidence_expires_at, vr.review_note, u.display_name
       FROM verification_requests vr JOIN users u ON u.id = vr.user_id
       ORDER BY CASE vr.status WHEN 'pending' THEN 0 ELSE 1 END, vr.created_at DESC LIMIT 100`).all<RecordValue>(),
