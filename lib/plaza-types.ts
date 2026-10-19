@@ -1,3 +1,3 @@
-export type PlazaComment = { id: number; authorId: string; authorName: string; personalityType: string; body: string; createdAt: string; official?: boolean };
+export type PlazaComment = { id: number; authorId: string; authorName: string; personalityType: string; body: string; createdAt: string; official?: boolean; avatar?: string };
 export type PlazaPost = { id: number; authorId: string; authorName: string; university: string; personalityType: string; category: string; audience: string; content: string; likeCount: number; commentCount: number; viewerLiked: boolean; createdAt: string; comments: PlazaComment[]; official?: boolean; avatar?: string };
 export type PlazaSnapshot = { viewer: { university: string; personalityType: string }; posts: PlazaPost[] };

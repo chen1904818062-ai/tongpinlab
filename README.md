@@ -17,6 +17,7 @@
 ## 高校认证
 
 - 「我的资料」和顶部头像使用当前服务端图片地址。头像上传即保存，旧设备资料草稿不再保存或恢复图片地址，避免换图后再次出现旧图。
+- 广场动态、普通评论与官方话题下的学生留言也按作者当前资料读取头像，覆盖认证用户和游客公开浏览；换图前发布的内容无需重发。返回广场窗口时主动刷新，无头像或图片不可用时显示昵称首字。
 - 后台用户列表的「查看资料」按需读取用户提交的头像、基本资料、介绍与兴趣，再执行资料审核。接口仅所有者管理员可用，读取不缓存并记录审计；不包含问卷逐题答案、私信或验证码。
 - 高校认证列表可查看申请详情：待审核申请加载原始报告码或学生证照片，显示补充说明，支持加载失败重试及照片放大；已处理申请显示摘要和审核结果，已清理的原始材料无法恢复。
 
@@ -71,6 +72,7 @@ node scripts/verify-account-chat.mjs
 node scripts/verify-account-chat-ui.mjs
 node scripts/verify-community-ui.mjs
 node scripts/verify-profile-review.mjs
+node scripts/verify-plaza-avatars.mjs
 ```
 
 腾讯云轻量服务器的完整部署流程见 [deploy/README.md](deploy/README.md)。

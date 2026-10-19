@@ -606,7 +606,7 @@ export async function getPlazaSnapshot(userId: string) {
       .bind(userId).first<RecordValue>(),
     db.prepare(`
       SELECT pp.id, pp.author_id, pp.category, pp.audience, pp.content, pp.created_at,
-        u.display_name, u.university, p.personality_type,
+        u.display_name, u.university, p.personality_type, p.photo_url,
         (SELECT COUNT(*) FROM plaza_likes pl WHERE pl.post_id = pp.id) AS like_count,
         (SELECT COUNT(*) FROM plaza_comments pc JOIN users cu ON cu.id = pc.author_id WHERE pc.post_id = pp.id AND pc.status = 'visible' AND cu.status = 'active') AS comment_count,
         EXISTS(SELECT 1 FROM plaza_likes mine WHERE mine.post_id = pp.id AND mine.user_id = ?) AS viewer_liked
@@ -620,7 +620,7 @@ export async function getPlazaSnapshot(userId: string) {
       ORDER BY pp.created_at DESC LIMIT 50
     `).bind(userId, allowDemo, userId).all<RecordValue>(),
     db.prepare(`
-      SELECT pc.id, pc.post_id, pc.author_id, pc.body, pc.created_at, u.display_name, p.personality_type
+      SELECT pc.id, pc.post_id, pc.author_id, pc.body, pc.created_at, u.display_name, p.personality_type, p.photo_url
       FROM plaza_comments pc
       JOIN users u ON u.id = pc.author_id
       LEFT JOIN profiles p ON p.user_id = pc.author_id
@@ -641,6 +641,7 @@ export async function getPlazaSnapshot(userId: string) {
       id: Number(item.id),
       authorId: String(item.author_id),
       authorName: String(item.display_name),
+      avatar: item.photo_url ? String(item.photo_url) : undefined,
       university: String(item.university ?? "高校"),
       personalityType: String(item.personality_type ?? "未测试"),
       category: String(item.category),
@@ -654,6 +655,7 @@ export async function getPlazaSnapshot(userId: string) {
         id: Number(comment.id),
         authorId: String(comment.author_id),
         authorName: String(comment.display_name),
+        avatar: comment.photo_url ? String(comment.photo_url) : undefined,
         personalityType: String(comment.personality_type ?? "未测试"),
         body: String(comment.body),
         createdAt: String(comment.created_at),
@@ -715,9 +717,9 @@ export async function addPlazaComment(userId: string, postId: number, body: stri
   const timestamp = now();
   const result = await db.prepare("INSERT INTO plaza_comments (post_id, author_id, body, status, created_at) VALUES (?, ?, ?, 'visible', ?)")
     .bind(postId, userId, text, timestamp).run();
-  const user = await db.prepare(`SELECT u.display_name, p.personality_type FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.id = ?`)
+  const user = await db.prepare(`SELECT u.display_name, p.personality_type, p.photo_url FROM users u LEFT JOIN profiles p ON p.user_id = u.id WHERE u.id = ?`)
     .bind(userId).first<RecordValue>();
-  return { id: Number(result.meta.last_row_id), authorId: userId, authorName: String(user?.display_name ?? "同学"), personalityType: String(user?.personality_type ?? "未测试"), body: text, createdAt: timestamp };
+  return { id: Number(result.meta.last_row_id), authorId: userId, authorName: String(user?.display_name ?? "同学"), avatar: user?.photo_url ? String(user.photo_url) : undefined, personalityType: String(user?.personality_type ?? "未测试"), body: text, createdAt: timestamp };
 }
 
 export async function deletePlazaPost(userId: string, postId: number) {
