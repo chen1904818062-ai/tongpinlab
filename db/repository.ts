@@ -773,6 +773,20 @@ export async function getAdminSnapshot(userId: string) {
   return { counts: { ...counts }, users: users.results.map((row) => ({ ...row })), verifications: verificationRows.results.map((row) => ({ ...row })), reports: reportRows.results.map((row) => ({ ...row })), logs: logs.results.map((row) => ({ ...row })) };
 }
 
+export async function getAdminProfile(actorId: string, targetUserId: string) {
+  const db = getD1();
+  const actor = await db.prepare("SELECT email, status FROM users WHERE id = ?").bind(actorId).first<RecordValue>();
+  if (actor?.status !== "active" || !isAdminEmail(String(actor.email || ""))) throw new AccessError("仅管理员可以查看用户提交的资料。", 403);
+  const [user, profile] = await Promise.all([
+    db.prepare("SELECT id, display_name, email, campus_email, university, verification_method, verification_status, campus_verified, verified_until, created_at FROM users WHERE id = ? AND status = 'active' AND role != 'demo'").bind(targetUserId).first<RecordValue>(),
+    db.prepare("SELECT * FROM profiles WHERE user_id = ?").bind(targetUserId).first<RecordValue>(),
+  ]);
+  if (!user) throw new AccessError("用户不存在或账号已注销。", 404);
+  await db.prepare("INSERT INTO audit_logs (actor_user_id, action, target_type, target_id, detail, created_at) VALUES (?, 'view_user_profile', 'user', ?, NULL, ?)").bind(actorId, targetUserId, now()).run();
+  // Deliberately exclude questionnaire answers, messages, sessions and OTPs.
+  return { user: { ...user }, profile: normalizeProfile(profile) };
+}
+
 export async function resolveReport(actorId: string, reportId: number, status: "resolved" | "dismissed", note: string) {
   const actor = await getUser(actorId);
   if (actor?.role !== "admin") throw new Error("仅管理员可以操作。");

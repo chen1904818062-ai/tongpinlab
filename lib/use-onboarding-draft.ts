@@ -25,7 +25,9 @@ export function useOnboardingDraft<T extends Record<string, string>>(userId: str
     queueMicrotask(() => {
       setProfile((current) => {
         const next = { ...current };
-        for (const field of Object.keys(current)) if (typeof saved.profile?.[field] === "string") (next as Record<string, string>)[field] = saved.profile[field].slice(0, 500);
+        // Avatar uploads are saved immediately. A device draft must never replace
+        // the current server URL with a previous (possibly deleted) image.
+        for (const field of Object.keys(current)) if (field !== "photoUrl" && typeof saved.profile?.[field] === "string") (next as Record<string, string>)[field] = saved.profile[field].slice(0, 500);
         return next;
       });
       setAnswers((current) => ({ ...current, ...restoredAnswers }));
@@ -35,7 +37,7 @@ export function useOnboardingDraft<T extends Record<string, string>>(userId: str
   useEffect(() => {
     if (!ready) return;
     write({
-      profile: Object.fromEntries(Object.entries(profile).filter(([field, value]) => baselineProfile.current[field] !== value)),
+      profile: Object.fromEntries(Object.entries(profile).filter(([field, value]) => field !== "photoUrl" && baselineProfile.current[field] !== value)),
       answers: Object.fromEntries(Object.entries(answers).filter(([id, value]) => baselineAnswers.current[id] !== value)),
       savedAt: Date.now(),
     });

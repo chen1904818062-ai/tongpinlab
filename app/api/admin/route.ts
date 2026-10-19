@@ -1,7 +1,14 @@
-import { resolveReport, reviewProfile } from "@/db/repository";
+import { getAdminProfile, resolveReport, reviewProfile } from "@/db/repository";
 import { reviewStudentVerification } from "@/db/student-verification";
 import { fail, ok } from "@/lib/api";
 import { requireApiUser } from "@/lib/session";
+
+export async function GET(request: Request) {
+  try {
+    const user = await requireApiUser();
+    return ok(await getAdminProfile(user.id, new URL(request.url).searchParams.get("userId") || ""), { headers: { "cache-control": "private, no-store", "x-content-type-options": "nosniff" } });
+  } catch (error) { return fail(error); }
+}
 
 export async function POST(request: Request) {
   try {
