@@ -11,7 +11,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="zh-CN">
-      <body>{children}<Toaster richColors position="top-center" /></body>
+      <body>{children}<footer className="border-t border-[#dce5d0] bg-[#f6f7f5] px-4 py-5 text-center text-xs text-[#71806e]"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer" className="underline-offset-4 hover:underline">闽ICP备2026041377号-1</a></footer><Toaster richColors position="top-center" /></body>
     </html>
   );
 }
