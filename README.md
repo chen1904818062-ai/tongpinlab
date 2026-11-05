@@ -1,88 +1,91 @@
-# 同频实验室
+<p align="center"><img src="docs/assets/banner.svg" alt="同频实验室 · 从认识自己到认识彼此" width="100%"></p>
 
-面向全国高校学生的人格测试、学生认证、关系匹配、私信和社交广场产品。
+<h1 align="center">同频实验室 · TongPinLab</h1>
+<p align="center"><b>面向高校学生的性格探索与校园社交产品。<br>先认识自己，再找到同频的人。</b></p>
+<p align="center">Next.js 16 · TypeScript · SQLite / Turso · Docker</p>
+<p align="center"><a href="#产品如何工作">产品流程</a> · <a href="#功能一览">功能</a> · <a href="#本地开发">本地开发</a> · <a href="#部署与文档">部署文档</a></p>
 
-备案期间的免费内测支持 Render + Turso 云数据库 + 数据库头像，步骤见 [deploy/FREE-HOSTING.md](deploy/FREE-HOSTING.md)。原有腾讯云部署默认继续使用本地 SQLite；使用 Render 时必须设置 `DATABASE_PROVIDER=turso`。
+## 为什么做同频实验室
 
-## 社区流程
+认识新朋友，难的常常是第一句话。性格探索帮助你了解自己，匹配问卷提供认识彼此的线索，广场与破冰话题让交流有一个自然的起点。
 
-- 完成 32 题后直接进入统一的 `/community` 四栏主界面，默认选中「同频广场」。顶部不再有重复的「逛广场」入口，旧 `/match` 链接跳转到同一主界面的相应栏目。通过签名 HttpOnly 浏览凭证免登录查看官方话题和用户主动选择 `public` 的动态。分享结果页本身不会授予浏览权限。
-- 发帖、点赞、评论、匹配和私信统一要求邮箱登录、高校认证、完整资料以及全部 20 题有效匹配答案；页面和接口均检查权限。
-- 原有 `national` 和 `same_university` 动态及评论不向游客开放。发帖默认仍为认证高校可见，公开需主动选择。
-- 小同（男生猫头鹰）与小频（女生水豚）是明确标识的官方虚拟伙伴，提供预设产品问答、六个常驻话题和标注的预设评论引导；也出现在「今日同频」的体验匹配中。每位伙伴有三个校园情境，完成参与准备后可以点选对话，不需要双向等待，不占用真人推荐名额。角色性格标注为设定，不展示虚构契合度或高校认证。
-- 体验匹配通过 `/api/companions` 独立校验完整参与权限，使用 `companion_experiences` 表按账号与角色保存当前情境进度；更新携带版本号，避免重复点击或多页覆盖。真实用户、真人匹配、真人私信表不混入虚拟数据。这里是预设情境练习，暂不支持开放式 AI 自由聊天。
-- 登录与认证保留原始话题或发帖位置；草稿在本设备保留 7 天，完成准备后由用户确认发送。资料草稿按账号隔离，匹配问卷逐题自动同步，验证码和认证材料不进入本地草稿。
-- 私信图片、表情留待下一版。
+产品将人格测试、校园认证、双向匹配和私信串成一条完整路径，面向全国高校学生。
 
-## 高校认证
+## 产品如何工作
 
-- 「我的资料」和顶部头像使用当前服务端图片地址。头像上传即保存，旧设备资料草稿不再保存或恢复图片地址，避免换图后再次出现旧图。
-- 广场动态、普通评论与官方话题下的学生留言也按作者当前资料读取头像，覆盖认证用户和游客公开浏览；换图前发布的内容无需重发。返回广场窗口时主动刷新，无头像或图片不可用时显示昵称首字。
-- 后台用户列表的「查看资料」按需读取用户提交的头像、基本资料、介绍与兴趣，再执行资料审核。接口仅所有者管理员可用，读取不缓存并记录审计；不包含问卷逐题答案、私信或验证码。
-- 高校认证列表可查看申请详情：待审核申请加载原始报告码或学生证照片，显示补充说明，支持加载失败重试及照片放大；已处理申请显示摘要和审核结果，已清理的原始材料无法恢复。
+**探索自己 → 完成参与准备 → 发现同频 → 开始交流**
 
-- 校园邮箱为默认方式：学校名称、校园邮箱和验证码即可直接认证并继续资料填写，无需等待人工审核。支持 .edu.cn、.edu、.ac.cn 教育邮箱；认证标记明确显示“校园邮箱认证”，仅表明邮箱归属已验证，不把它视为当前在读的充分证明。
-- 学信网：学校名称加《教育部学籍在线验证报告》12/16 位在线验证码。学生证：学校名称加一张能看清学校、姓名、学号的照片。不重复填写姓名、完整学号或预计毕业日期，不要求手写口令、额外注册证明。材料属于本人及用途同意保留为一次勾选。
-- 仅所有者管理员可查看原始材料；打开材料后可直接通过，备注可选，退回时填写简短理由。学信网报告需在 [官方查验页](https://www.chsi.com.cn/xlcx/bgcx.jsp) 实际核对，无自动官方认证接口，不提供虚假的格式认证。后台没有逐项清单或手动有效期设置；系统维护 180 天认证有效期，旧认证保持可用，先前加密申请兼容审核。
-- 校园验证码按账号和用途哈希保存至现有 login_codes 表，10 分钟有效、每次最多尝试 5 次、60 秒发送间隔，新码替换旧码，使用后作废；同一校园邮箱不能绑定多个账号。校园邮箱认证成功时撤回该账号尚在等待的材料申请并删除材料，防止旧审核覆盖新结果。
-- 材料通过 /api/verification 按会话账号提交、查询、撤回。报告码和规范化照片指纹防止相同凭证跨账号重复提交，不能据此完全排除他人报告、照片修改或冒用。照片解码验证、去元信息、压缩后和报告码一起 AES-256-GCM 加密保存，分用途密钥由持久化 AUTH_CODE_SECRET 派生，不放入公开头像目录。审核完成或撤回后逻辑删除原始材料；未审核材料 14 天后失效，在认证服务或后台下次访问时清理，历史备份不等于即时物理擦除。
-- 个人页面、真人推荐和后台显示相应认证方式，邮箱、报告码和学生证照片不公开。退出登录保持相对 Location 的 303 跳转并清除会话，避免跳到反向代理内部地址。
+1. **探索自己**：完成 32 题性格测试，进入统一社区，浏览官方话题及用户主动公开的动态。
+2. **完成准备**：邮箱登录、校园认证、完善资料，并完成 20 题匹配问卷。
+3. **发现同频**：在「今日同频」中发现真人推荐，或在广场参与话题、表达观点。
+4. **开始交流**：真人双向选择后开启私信；按校园日常、兴趣交换等类别选择破冰话题。
 
-## 账号注销与私信
+## 功能一览
 
-- 登录后可从顶部账号图标、我的资料安全中心或认证页进入 /account，不要求先完成高校认证。注销先验证发往当前登录邮箱的专用验证码，再输入“注销账号”并确认影响；取消不会注销，重新打开确认框需要重新输入确认信息。
-- /api/account 只操作当前会话账号，忽略外部传入的邮箱和用户 ID。验证码按账号及用途哈希保存，10 分钟有效、60 秒重发间隔、每小时最多 5 次、最多 5 次校验，使用后作废。
-- 确认注销会事务性移除资料、认证材料、头像、问卷、伙伴进度、本人评论/点赞/私信，清除本人发布动态的内容，关闭匹配并删除全部会话和验证码。保留匿名用户占位、必要举报/审计及原有备份；其他人的消息不随之删除。此为应用数据的逻辑删除，不承诺抹除外部缓存或历史备份。重新注册会创建全新账号，旧会话不能重新创建已注销身份。前端清理当前设备中该账号的资料和聊天草稿。
-- 私信继续要求完整参与准备和双向选择。新的聊天界面有头像、明确认证方式、日期分隔、换行输入、发送状态、字数限制和按账号/会话隔离的本标签页草稿；失败保留文本，输入法组词回车不发送，Enter 发送、Shift+Enter 换行。阅读历史时新消息不会强制拉到底部。
-- 破冰话题分为轻松开场、校园日常、兴趣交换、慢慢了解四类，可换一组；共同兴趣仅取双方公开资料的交集。点击只填入输入框，保留已有草稿并等待用户确认发送。这里不是 AI 自动代聊。图片和表情仍留待后续版本。
+| 模块 | 体验与设计 |
+| :--- | :--- |
+| 性格探索 | 32 题测试，从认识自己的偏好与特点开始 |
+| 校园认证 | 校园邮箱验证，以及学信网报告 / 学生证人工审核 |
+| 双向匹配 | 基于问卷与资料发现同频，双方选择后才能真人私信 |
+| 同频广场 | 官方话题、动态、点赞与评论，动态有不同可见范围 |
+| 破冰与私信 | 分类话题、发送状态、日期分隔与草稿，帮助交流开始 |
+| 虚拟伙伴 | 小同与小频提供明确标注的预设校园情境练习 |
 
-## 当前服务器架构
+## 参与与隐私
 
-- Next.js 16，Node.js 24
-- 服务器 SQLite（WAL 模式、自动迁移）
-- 邮箱验证码登录、数据库会话、HttpOnly Cookie
-- 腾讯云 COS 用户图片与异地备份
-- Docker Compose 进程守护
-- Nginx 反向代理与 Let's Encrypt HTTPS
+- 游客只能浏览官方话题与主动公开的动态；发帖、互动、匹配和私信需要完成参与准备。
+- 校园邮箱认证仅表明邮箱归属已验证；学信网与学生证材料由所有者管理员人工审核。
+- 认证材料加密保存，不在公开资料中展示；材料清理、认证有效期及账号注销范围见[工程说明](docs/ENGINEERING.md)。
+- 虚拟伙伴与真人数据区分，提供预设情境，不支持开放式 AI 自由聊天。真人私信目前以文字为主，图片与表情留待后续版本。
 
 ## 本地开发
 
+项目使用 **Next.js 16、React、TypeScript、Drizzle ORM**，本地默认 SQLite。建议使用 **Node.js 24**，依赖声明要求 ≥ 22.13.0。
+
 ```bash
+git clone https://github.com/chen1904818062-ai/tongpinlab.git
+cd tongpinlab
+npm run install:ci
 cp .env.production.example .env.local
-# 本地可将 AUTH_ALLOW_DEMO_CODES=true、AUTH_COOKIE_SECURE=false、COS_ALLOW_LOCAL_STORAGE=true
+```
+
+本地开发可在 `.env.local` 中设置：
+
+```dotenv
+AUTH_ALLOW_DEMO_CODES=true
+AUTH_COOKIE_SECURE=false
+COS_ALLOW_LOCAL_STORAGE=true
+```
+
+```bash
 npm run dev
 ```
 
-首次访问数据库时会自动执行 `drizzle/` 中尚未运行的迁移。默认数据库位置为 `data/tongpin.sqlite`。
+首次访问数据库会自动执行 `drizzle/` 中尚未运行的迁移，默认数据库路径为 `data/tongpin.sqlite`。其他配置按环境变量示例与部署文档填写；上述演示配置仅用于本地开发。
 
-## 检查和构建
+检查与构建：
 
 ```bash
 npm run lint
 npm run build
-npm run db:backup
 ```
 
-构建后可运行隔离 SQLite 回归；浏览器验收需要本机 Chrome，截图在 `.tmp/unified-community-qa/`。以下脚本均不连接生产数据库、不发送真实邮件：
+隔离数据库回归和浏览器验收入口见[工程说明](docs/ENGINEERING.md#检查和构建)。
 
-```bash
-node scripts/verify-social-flow.mjs
-node scripts/verify-student-verification.mjs
-node scripts/verify-account-chat.mjs
-node scripts/verify-account-chat-ui.mjs
-node scripts/verify-community-ui.mjs
-node scripts/verify-profile-review.mjs
-node scripts/verify-plaza-avatars.mjs
-```
+## 部署与文档
 
-腾讯云轻量服务器的完整部署流程见 [deploy/README.md](deploy/README.md)。
+| 目的 | 文档 |
+| :--- | :--- |
+| 腾讯云：Docker、Nginx、HTTPS、COS 与备份 | [完整部署指南](deploy/README.md) |
+| Render + Turso：备案期间免费内测 | [免费托管说明](deploy/FREE-HOSTING.md) |
+| 认证、社区权限、注销、私信与验证脚本 | [工程说明](docs/ENGINEERING.md) |
 
-## 生产环境必填配置
+腾讯云原部署默认使用本地 SQLite；Render 路径必须设置 `DATABASE_PROVIDER=turso`。生产环境保持 `AUTH_ALLOW_DEMO_CODES=false`、`AUTH_COOKIE_SECURE=true`、`COS_ALLOW_LOCAL_STORAGE=false`。
 
-- `DOMAIN`、`CERTBOT_EMAIL`
-- `ADMIN_EMAIL`
-- `AUTH_CODE_SECRET`
-- `RESEND_API_KEY`、`EMAIL_FROM`
-- `COS_SECRET_ID`、`COS_SECRET_KEY`、`COS_BUCKET`、`COS_REGION`
+## 反馈与交流
 
-生产环境保持 `AUTH_ALLOW_DEMO_CODES=false`、`AUTH_COOKIE_SECURE=true`、`COS_ALLOW_LOCAL_STORAGE=false`。
+欢迎通过 [Issues](https://github.com/chen1904818062-ai/tongpinlab/issues) 提出体验反馈与功能建议，请勿附上学生证、验证码或私人聊天内容。
+
+由 **[陈宇杰 · kalsookie](https://github.com/chen1904818062-ai)** 独立构建 · 另一个项目：[拾言](https://github.com/chen1904818062-ai/shiyan)
+
+<sub>A campus social product for personality discovery, mutual matching and easier conversations.</sub>
